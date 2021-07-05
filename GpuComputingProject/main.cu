@@ -104,7 +104,7 @@ __global__ void kernel_robert_h_convolution(unsigned char* image, unsigned char*
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width - (KERNEL_RADIUS) * 2 <= col || height <= row - (KERNEL_RADIUS) * 2)
+	if (width - (KERNEL_RADIUS) * 2 <= col || height - (KERNEL_RADIUS) * 2 <= row)
 		return;
 
 	int color = 0;
@@ -117,7 +117,7 @@ __global__ void kernel_robert_h_convolution(unsigned char* image, unsigned char*
 		{
 			for (int k = 0; k < channels; k++)
 				color += pixel[k];
-			color /= 3;
+			color /= channels;
 			result += color * d_robert_kernel_3x3_h[i][j];
 			pixel += channels;
 			color = 0;
@@ -236,21 +236,21 @@ int main()
 	block = dim3(BLOCK_SIZE, BLOCK_SIZE);
 	grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
 	begin = clock();
-	kernel_robert_h_convolution << < grid, block >> > (d_image, d_filtered_image, width, height, channels);
+	kernel_robert_h_convolution <<< grid, block >> > (d_image, d_filtered_image, width, height, channels);
 	cudaDeviceSynchronize();
 	end = clock();
 	status = cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost);
 
-	/*if (status != cudaSuccess)
+	if (status != cudaSuccess)
 	{
 		printf(cudaGetErrorString(status));
 		return 0;
-	}*/
+	}
 
 	stbi_write_png("Sample_Naive_Convolution_Robert_32x32_block.png", f_width, f_height, 1, filtered_image, f_width);
 	elapsed_time = (double)(end - begin) / CLOCKS_PER_SEC;
 	printf("GPU naive Convolution:%f seconds\n", elapsed_time);
-	printf("Speedup: %f\n\n", elapsed_time / cpu_time);
+	printf("Speedup: %f %\n\n", (cpu_time/elapsed_time)*100.0);
 
 	printf("============================\n");
 	printf("	CPU Module(Sobel)	\n");
