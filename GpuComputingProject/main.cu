@@ -9,11 +9,13 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION 
 #include <stb_image_write.h>
 #include <time.h>
+#include <cpu_imp.cuh>
 
 #define KERNEL_SIZE 3
 #define KERNEL_RADIUS KERNEL_SIZE/2
 #define BLOCK_SIZES 3
-#define OUTPUT false
+#define STREAMS 2
+#define OUTPUT true
 
 #define CHECK(call)                                                            \
 {                                                                              \
@@ -26,91 +28,60 @@
     }                                                                          \
 }
 
-int robert_kernel_3x3_h[3][3] = { {1, 0, 0}, {0, -1, 0}, {0, 0, 0} };
-int robert_kernel_3x3_v[3][3] = { {0, 1, 0},{-1, 0, 0}, {0, 0, 0} };
+#pragma region GLOBAL_VARIABLES
 
 __constant__ int d_robert_kernel_3x3_h[3][3];
 __constant__ int d_robert_kernel_3x3_v[3][3];
 
 int block_sizes[3] = { 8, 16, 32 };
 
-int sobel_kernel_3x3_h[3][3] = { {1, 0, -1}, {2, 0, -2}, {1, 0, -1} };
-int sobel_kernel_3x3_v[3][3] = { {1, 2, 1}, {0, 0, 0}, {-1, -2, -1} };
-
-unsigned char* image;
 unsigned char* d_image;
-unsigned char* filtered_image;
 unsigned char* d_filtered_image;
+unsigned char* pinned_image;
+unsigned char* pinned_filtered_image;
 
-#pragma region CPU_IMPLEMENTATIONS
+cudaStream_t stream[STREAMS];
 
-int cpu_convolution(unsigned char* pixel, int channels, int* kernel, int width, int height, int kernel_size)
-{
-	int result = 0;
-	int color = 0;
-	for (int j = 0; j < kernel_size; j++)
-	{
-		for (int k = 0; k < kernel_size; k++)
-		{
-			for (int i = 0; i < channels; i++)
-				color += pixel[i];
-			color /= channels;
-			result += color * kernel[j*kernel_size + k];
-			pixel += channels;
-			color = 0;
-		}
-		pixel += (width * channels) - channels * (kernel_size - 1);
-	}
+char filename[] = "Sample.png";
+const char* output_filename_robert[] = { "Sample_Naive_Convolution_Robert_8x8_block.png",
+									"Sample_Naive_Convolution_Robert_16x16_block.png",
+									"Sample_Naive_Convolution_Robert_32x32_block.png" };
 
-	return result;
-}
+const char* output_filename_robert_smem[] = { "Sample_Convolution_Robert_8x8_block_smem.png",
+									"Sample_Convolution_Robert_16x16_block_smem.png",
+									"Sample_Convolution_Robert_32x32_block_smem.png" };
 
+const char* output_filename_robert_stream[] = { "Sample_Convolution_Robert_8x8_block_stream.png",
+									"Sample_Convolution_Robert_16x16_block_stream.png",
+									"Sample_Convolution_Robert_32x32_block_stream.png" };
+clock_t begin_cpu, end_cpu;
+cudaEvent_t begin_gpu, end_gpu;
 
-void cpu_filter(unsigned char* image, int width, int height, int channels, size_t image_size, int* kernel, int kernel_size, unsigned char* result)
-{
-	unsigned char* pixel = image;
-	unsigned char* r = result;
-	int kernel_radius = kernel_size / 2;
-	int value = 0;
-	for (int i = 0; i < height - kernel_radius * 2; i++)
-	{
-		for (int j = 0; j < width - kernel_radius * 2; j++, pixel += channels)
-		{
-			value = cpu_convolution(pixel, channels, kernel, width, height, kernel_size);
-			if (value < 0)
-				r[0] = 0;
-			else
-				r[0] = value;
-			r += 1;
-		}
-		pixel += (kernel_radius * channels) * 2;
-	}
-}
-
-void cpu_module(unsigned char* image, int width, int height, int channels, size_t image_size, int* kernel_h, int* kernel_v, int kernel_size, unsigned char* result)
-{
-	int gh = 0;
-	int gv = 0;
-	int kernel_radius = kernel_size / 2;
-
-	unsigned char* pixel = image;
-	unsigned char* r = result;
-	for (int i = 0; i < height - kernel_radius * 2; i++)
-	{
-		for (int j = 0; j < width - kernel_radius * 2; j++, pixel += channels)
-		{
-			gh = cpu_convolution(pixel, channels, kernel_h, width, height, kernel_size);
-			gv = cpu_convolution(pixel, channels, kernel_v, width, height, kernel_size);
-			r[0] = sqrt(gh*gh + gv * gv);
-			r += 1;
-		}
-		pixel += (kernel_radius * channels) * 2;
-	}
-}
+dim3 grid;
+dim3 block;
+int width;
+int height;
+int f_width;
+int f_height;
+int channels;
+size_t image_size;
+size_t filtered_image_size;
+float cpu_time = 1;
+float elapsed_time = 1;
 
 #pragma endregion
 
 #pragma region GPU_IMPLEMENTATIONS
+
+__device__ int grayscale(unsigned char* pixel, int channels)
+{
+	int color = 0;
+	for (int j = 0; j < channels; j++)
+		color += pixel[j];
+	color /= channels;
+	return color;
+}
+
 __global__ void kernel_robert_h_convolution(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
@@ -119,10 +90,97 @@ __global__ void kernel_robert_h_convolution(unsigned char* image, unsigned char*
 	if (width - (KERNEL_RADIUS) * 2 <= col || height - (KERNEL_RADIUS) * 2 <= row)
 		return;
 
-	int color = 0;
 	int result = 0;
 	int index = row * width + col - ((KERNEL_RADIUS) * 2)*row;
 	unsigned char* pixel = image + row * width * channels + col * channels;
+	for (int i = 0; i < KERNEL_SIZE; i++)
+	{
+		for (int j = 0; j < KERNEL_SIZE; j++)
+		{
+			result += grayscale(pixel, channels) * d_robert_kernel_3x3_h[i][j];
+			pixel += channels;
+		}
+		pixel += (width * channels) - channels * (KERNEL_SIZE - 1) - channels;
+	}
+	if (result < 0)
+		result = 0;
+	(filtered_image + index)[0] = result;
+}
+
+__global__ void kernel_robert_h_convolution_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side)
+{
+	int row = threadIdx.y + blockIdx.y*blockDim.y;
+	int col = threadIdx.x + blockIdx.x*blockDim.x;
+
+	if (width <= col || height <= row)
+		return;
+
+	extern __shared__ unsigned char image_tile[];
+
+	unsigned char *pixel = image + row * width *channels + col * channels;
+
+	int tile_index = threadIdx.y*tile_side + threadIdx.x;
+
+	image_tile[tile_index] = grayscale(pixel, channels);
+
+	if (width - (KERNEL_RADIUS) * 2 <= col || height - (KERNEL_RADIUS) * 2 <= row)
+		return;
+
+	if (threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1)
+	{
+		//Bottom right corner thread
+		image_tile[tile_index + 1] = grayscale(pixel + channels, channels);
+		image_tile[tile_index + 2] = grayscale(pixel + channels * 2, channels);
+		image_tile[tile_index + tile_side] = grayscale(pixel + width * channels, channels);
+		image_tile[tile_index + tile_side * 2] = grayscale(pixel + (width*channels) * 2, channels);
+
+		image_tile[tile_index + tile_side + 1] = grayscale(pixel + width * channels + channels, channels);
+		image_tile[tile_index + tile_side + 2] = grayscale(pixel + width * channels + channels * 2, channels);
+		image_tile[tile_index + tile_side * 2 + 1] = grayscale(pixel + width * channels * 2 + channels, channels);
+		image_tile[tile_index + tile_side * 2 + 2] = grayscale(pixel + width * channels * 2 + channels * 2, channels);
+	}
+	else if (threadIdx.x == blockDim.x - 1)
+	{
+		//Right edge thread
+		image_tile[tile_index + 1] = grayscale(pixel + channels, channels);
+		image_tile[tile_index + 2] = grayscale(pixel + channels * 2, channels);
+	}
+	else if (threadIdx.y == blockDim.y - 1)
+	{
+		//Bottom left corner thread
+		image_tile[tile_index + tile_side] = grayscale(pixel + width * channels, channels);
+		image_tile[tile_index + tile_side * 2] = grayscale(pixel + (width*channels) * 2, channels);
+	}
+
+	__syncthreads();
+
+	int result = 0;
+
+	for (int i = 0; i < KERNEL_SIZE; i++)
+	{
+		for (int j = 0; j < KERNEL_SIZE; j++, tile_index++)
+			result += image_tile[tile_index] * d_robert_kernel_3x3_h[i][j];
+		tile_index += tile_side - KERNEL_RADIUS*2 - 1;
+	}
+	if (result < 0)
+		result = 0;
+
+	int index = row * width + col - ((KERNEL_RADIUS) * 2)*row;
+	(filtered_image + index)[0] = result;
+}
+
+__global__ void kernel_robert_h_convolution_stream(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int offset_input, int offset_output)
+{
+	int row = threadIdx.y + blockIdx.y*blockDim.y;
+	int col = threadIdx.x + blockIdx.x*blockDim.x;
+
+	if (width <= col || height <= row)
+		return;
+
+	int color = 0;
+	int result = 0;
+	int index = (row * width + col - ((KERNEL_RADIUS) * 2)*row) + offset_input;
+	unsigned char* pixel = image + row * width * channels + col * channels + offset_input;
 	for (int i = 0; i < KERNEL_SIZE; i++)
 	{
 		for (int j = 0; j < KERNEL_SIZE; j++)
@@ -138,48 +196,64 @@ __global__ void kernel_robert_h_convolution(unsigned char* image, unsigned char*
 	}
 	if (result < 0)
 		result = 0;
-	(filtered_image + index)[0] = result;
+	(filtered_image + offset_output + (row * width + col - ((KERNEL_RADIUS) * 2)*row))[0] = result;
+
 }
 
-__global__ void kernel_robert_h_convolution_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels)
+#pragma endregion
+
+#pragma region WRAPPERS
+
+void naive_gpu_convolution()
 {
-	int row = threadIdx.y + blockIdx.y*blockDim.y;
-	int col = threadIdx.x + blockIdx.x*blockDim.x;
-
-	if (width <= col || height <= row)
-		return;
-
-	extern __shared__ unsigned char image_tile[];
-
-	int result = 0;
-	int index = row * width + col - ((KERNEL_RADIUS) * 2)*row;
-	unsigned char* pixel = image + row * width *channels + col * channels;
-	int tile_index = threadIdx.y*blockDim.x + threadIdx.x;
-
-	image_tile[tile_index] = 0;
-	for (int j = 0; j < channels; j++)
-		image_tile[tile_index]+=pixel[j];
-
-	image_tile[tile_index] /= channels;
-
-	__syncthreads();
-
-	if (width - (KERNEL_RADIUS) * 2 <= col || height - (KERNEL_RADIUS) * 2 <= row)
-		return;
-
-	for (int i = 0; i < KERNEL_SIZE; i++)
+	for (int i = 0; i < BLOCK_SIZES; i++)
 	{
-		for (int j = 0; j < KERNEL_SIZE; j++)
-		{
-			result +=  image_tile[tile_index] * d_robert_kernel_3x3_h[i][j];
-			tile_index++;
-		}
-		tile_index += blockDim.x - KERNEL_SIZE - 1;
-	}
-	if (result < 0)
-		result = 0;
+		printf("%dx%d blocks\n", block_sizes[i], block_sizes[i]);
+		block = dim3(block_sizes[i], block_sizes[i]);
+		grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
 
-	(filtered_image + index)[0] = result;
+		CHECK(cudaEventRecord(begin_gpu, 0));
+
+		kernel_robert_h_convolution << < grid, block >> > (d_image, d_filtered_image, width, height, channels);
+
+		CHECK(cudaEventRecord(end_gpu, 0));
+		CHECK(cudaEventSynchronize(end_gpu));
+
+		CHECK(cudaEventElapsedTime(&elapsed_time, begin_gpu, end_gpu));
+		CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
+		if (OUTPUT)
+			stbi_write_png(output_filename_robert[i], f_width, f_height, 1, filtered_image, f_width);
+		elapsed_time = elapsed_time * pow(10.0, -3.0);
+		printf("Time elapsed:%f seconds\n", elapsed_time);
+		printf("Speedup: %f %\n\n", (cpu_time / elapsed_time)*100.0);
+	}
+}
+
+void smem_gpu_convolution()
+{
+	for (int i = 0; i < BLOCK_SIZES; i++)
+	{
+		printf("%dx%d blocks\n", block_sizes[i], block_sizes[i]);
+		block = dim3(block_sizes[i], block_sizes[i]);
+		grid = dim3((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+
+		CHECK(cudaEventRecord(begin_gpu, 0));
+		int tile_side = block_sizes[i] + KERNEL_RADIUS * 2;
+		size_t tile_size = tile_side * tile_side;
+		kernel_robert_h_convolution_smem << < grid, block, tile_size >> > (d_image, d_filtered_image, width, height, channels, tile_side);
+		CHECK(cudaEventRecord(end_gpu, 0));
+		CHECK(cudaEventSynchronize(end_gpu));
+
+		CHECK(cudaEventElapsedTime(&elapsed_time, begin_gpu, end_gpu));
+		CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
+		if (OUTPUT)
+			stbi_write_png(output_filename_robert_smem[i], f_width, f_height, 1, filtered_image, f_width);
+
+		elapsed_time = elapsed_time * pow(10.0, -3.0);
+		printf("Time elapsed:%f seconds\n", elapsed_time);
+		printf("Speedup: %f %\n\n", (cpu_time / elapsed_time)*100.0);
+		CHECK(cudaMemset(d_filtered_image, 0, filtered_image_size));
+	}
 }
 
 #pragma endregion
@@ -188,37 +262,26 @@ void freeHostMemory()
 {
 	free(image);
 	free(filtered_image);
+	cudaFreeHost(pinned_image);
+	cudaFreeHost(pinned_filtered_image);
 }
 
 void freeDeviceMemory()
 {
 	cudaFree(d_image);
 	cudaFree(d_filtered_image);
+
+	/*for (int i = 0; i < STREAMS; i++)
+	{
+		cudaStreamDestroy(stream[i]);
+	}*/
+
+	cudaEventDestroy(begin_gpu);
+	cudaEventDestroy(end_gpu);
 }
 
 int main()
 {
-	dim3 grid;
-	dim3 block;
-	int width;
-	int height;
-	int f_width;
-	int f_height;
-	int channels;
-	size_t image_size;
-	size_t filtered_image_size;
-	char filename[] = "Sample.png";
-	const char* output_filename_robert[] = { "Sample_Naive_Convolution_Robert_8x8_block.png",
-										"Sample_Naive_Convolution_Robert_16x16_block.png",
-										"Sample_Naive_Convolution_Robert_32x32_block.png" };
-
-	const char* output_filename_robert_smem[] = { "Sample_Naive_Convolution_Robert_8x8_block_smem.png",
-										"Sample_Naive_Convolution_Robert_16x16_block_smem.png",
-										"Sample_Naive_Convolution_Robert_32x32_block_smem.png" };
-	clock_t begin_cpu, end_cpu;
-	cudaEvent_t begin_gpu, end_gpu;
-	float cpu_time = 1;
-	float elapsed_time = 0;
 	//Image loading and common check
 	image = stbi_load(filename, &width, &height, &channels, 0);
 	if (image == NULL)
@@ -256,7 +319,8 @@ int main()
 	end_cpu = clock();
 	cpu_time = (float)(end_cpu - begin_cpu) / CLOCKS_PER_SEC;
 	printf("CPU Convolution:%f seconds\n\n", cpu_time);
-	stbi_write_png("Sample_Convolution_Robert.png", f_width, f_height, 1, filtered_image, f_width);
+	if(OUTPUT)
+		stbi_write_png("Sample_Convolution_Robert.png", f_width, f_height, 1, filtered_image, f_width);
 
 	printf("============================\n");
 	printf("	GPU naive Convolution(Robert)	\n");
@@ -268,61 +332,57 @@ int main()
 	CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
 	CHECK(cudaMemset(d_filtered_image, 0, filtered_image_size));
 
-	for (int i = 0; i < BLOCK_SIZES; i++)
-	{
-		printf("%dx%d blocks\n", block_sizes[i], block_sizes[i]);
-		block = dim3(block_sizes[i], block_sizes[i]);
-		grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
+	//Creation timing events
+	CHECK(cudaEventCreate(&begin_gpu));
+	CHECK(cudaEventCreate(&end_gpu));
 
-		cudaEventCreate(&begin_gpu);
-		cudaEventRecord(begin_gpu, 0);
-
-		kernel_robert_h_convolution <<< grid, block >> > (d_image, d_filtered_image, width, height, channels);
-
-		cudaEventCreate(&end_gpu);
-		cudaEventRecord(end_gpu, 0);
-		cudaEventSynchronize(end_gpu);
-
-		cudaEventElapsedTime(&elapsed_time, begin_gpu, end_gpu);
-		CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
-		if(OUTPUT)
-			stbi_write_png(output_filename_robert[i], f_width, f_height, 1, filtered_image, f_width);
-		elapsed_time = elapsed_time * pow(10.0, -3.0);
-		printf("Time elapsed:%f seconds\n", elapsed_time);
-		printf("Speedup: %f %\n\n", (cpu_time / elapsed_time)*100.0);
-		CHECK(cudaMemset(d_filtered_image, 0, filtered_image_size));
-	}
+	naive_gpu_convolution();
 
 	printf("============================\n");
 	printf("	GPU Convolution(Smem)	\n");
 	printf("============================\n\n");
 
+	smem_gpu_convolution();
+
+	printf("============================\n");
+	printf("	GPU Convolution(Stream)	\n");
+	printf("============================\n\n");
+	//Allocation and initialization of pinned memory
+	/*CHECK(cudaHostAlloc(&pinned_image, image_size, 0));
+	CHECK(cudaHostAlloc(&pinned_filtered_image, filtered_image_size, 0));
+	pinned_image = stbi_load(filename, &width, &height, &channels, 0);
+	size_t chunk_size = (image_size / STREAMS) + width * channels;
+	size_t chunk_size_result = filtered_image_size / STREAMS;
+	//Stream creation
+	for (int i = 0; i < STREAMS; i++)
+		CHECK(cudaStreamCreate(&stream[i]));
+
 	for (int i = 0; i < BLOCK_SIZES; i++)
 	{
-		printf("%dx%d blocks\n", block_sizes[i], block_sizes[i]);
-		block = dim3(block_sizes[i], block_sizes[i]);
-		grid = dim3((width + block.x - 1) / block.x, (height + block.y - 1) / block.y);
+		printf("%dx%d blocks with %d streams\n", block_sizes[i], block_sizes[i], STREAMS);
+		int offset_input = 0;
+		int offset_output = 0;
+		CHECK(cudaEventRecord(begin_gpu));
 
-		cudaEventCreate(&begin_gpu);
-		cudaEventRecord(begin_gpu, 0);
-		size_t tile_size = (block_sizes[i] + KERNEL_RADIUS * 2)*(block_sizes[i] + KERNEL_RADIUS * 2);
-		printf("Begin\n");
-		kernel_robert_h_convolution_smem << < grid, block, tile_size >> > (d_image, d_filtered_image, width, height, channels);
-
-		cudaEventCreate(&end_gpu);
-		cudaEventRecord(end_gpu, 0);
-		cudaEventSynchronize(end_gpu);
-		printf("End\n");
-
-		cudaEventElapsedTime(&elapsed_time, begin_gpu, end_gpu);
-		CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
-		if(OUTPUT)
-			stbi_write_png(output_filename_robert_smem[i], f_width, f_height, 1, filtered_image, f_width);
+		for (int j = 0; j < STREAMS; j++)
+		{
+			block = dim3(block_sizes[i], block_sizes[i]);
+			grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
+			cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]);
+			kernel_robert_h_convolution_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, f_width, f_height / STREAMS, channels, offset_input, offset_output);
+			cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]);
+			offset_input += (image_size / STREAMS) - width * channels;
+			offset_output += chunk_size_result;
+		}
+		CHECK(cudaEventRecord(end_gpu));
+		CHECK(cudaEventSynchronize(end_gpu));
+		CHECK(cudaEventElapsedTime(&elapsed_time, begin_gpu, end_gpu));
+		if (OUTPUT)
+			stbi_write_png(output_filename_robert_stream[i], f_width, f_height, 1, pinned_filtered_image, f_width);
 		elapsed_time = elapsed_time * pow(10.0, -3.0);
 		printf("Time elapsed:%f seconds\n", elapsed_time);
 		printf("Speedup: %f %\n\n", (cpu_time / elapsed_time)*100.0);
-		CHECK(cudaMemset(d_filtered_image, 0, filtered_image_size));
-	}
+	}*/
 
 	/*printf("============================\n");
 	printf("	CPU Module(Sobel)	\n");
