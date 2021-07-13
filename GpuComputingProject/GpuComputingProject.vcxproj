@@ -86,10 +86,14 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="cpu_imp.cu" />
+    <CudaCompile Include="gpu_imp.cu" />
     <CudaCompile Include="main.cu" />
+    <CudaCompile Include="utils.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="headers\cpu_imp.cuh" />
+    <ClInclude Include="headers\gpu_imp.cuh" />
+    <ClInclude Include="headers\utils.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

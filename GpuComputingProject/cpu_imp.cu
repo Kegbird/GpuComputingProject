@@ -23,6 +23,28 @@ int cpu_convolution(unsigned char* pixel, int channels, int* kernel, int width, 
 	return result;
 }
 
+void cpu_convolution_module(unsigned char* pixel, int channels, int* kernel_h, int* kernel_v, int width, int height, int kernel_size, int* gh, int* gv)
+{
+	int result = 0;
+	int color = 0;
+	*gh = 0;
+	*gv = 0;
+	for (int j = 0; j < kernel_size; j++)
+	{
+		for (int k = 0; k < kernel_size; k++)
+		{
+			for (int i = 0; i < channels; i++)
+				color += pixel[i];
+			color /= channels;
+			*gh += color * kernel_h[j*kernel_size + k];
+			*gv += color * kernel_v[j*kernel_size + k];
+			pixel += channels;
+			color = 0;
+		}
+		pixel += (width * channels) - channels * (kernel_size - 1) - channels;
+	}
+}
+
 void cpu_filter(char* filename, char* output_filename, int* kernel, int kernel_size, int kernel_radius, bool output)
 {
 	unsigned char* image;
@@ -84,8 +106,7 @@ void cpu_module(char* filename, char* output_filename, int* kernel_h, int* kerne
 	{
 		for (int j = 0; j < width - kernel_radius * 2; j++, pixel += channels)
 		{
-			gh = cpu_convolution(pixel, channels, kernel_h, width, height, kernel_size);
-			gv = cpu_convolution(pixel, channels, kernel_v, width, height, kernel_size);
+			cpu_convolution_module(pixel, channels, kernel_h, kernel_v, width, height, kernel_size, &gh, &gv);
 			res[0] = (unsigned char)sqrt(gh*gh + gv * gv);
 			res += 1;
 		}

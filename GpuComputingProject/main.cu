@@ -26,33 +26,55 @@ int main()
 	printf("============================\n");
 	printf("	CPU Convolution(Robert)	\n");
 	printf("============================\n\n");
-	cpu_filter(filename, "Sample_Robert.png", &robert_kernel_3x3_h[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+	//cpu_filter(filename, "Sample_Robert.png", &robert_kernel_3x3_h[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 	load_constant_memory_robert_h(&robert_kernel_3x3_h[0][0], KERNEL_SIZE);
+	load_constant_memory_robert_v(&robert_kernel_3x3_v[0][0], KERNEL_SIZE);
+
+	load_constant_memory_sobel_h(&sobel_kernel_3x3_h[0][0], KERNEL_SIZE);
+	load_constant_memory_sobel_v(&sobel_kernel_3x3_v[0][0], KERNEL_SIZE);
 
 	printf("============================\n");
-	printf("	GPU naive Convolution(Robert)	\n");
+	printf("	GPU Convolution(Robert) - Parallel	\n");
 	printf("============================\n\n");
 
-	naive_robert_gpu_convolution(filename, &robert_kernel_3x3_h[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+	//naive_robert_gpu_convolution(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 	printf("============================\n");
-	printf("	GPU Convolution(Smem)	\n");
+	printf("	GPU Convolution(Robert) - Smem	\n");
 	printf("============================\n\n");
 
-	smem_gpu_convolution(filename, &robert_kernel_3x3_h[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+	//smem_robert_gpu_convolution(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 	printf("============================\n");
-	printf("	GPU Convolution(Stream)	\n");
+	printf("	GPU Convolution(Robert) - Streams	\n");
 	printf("============================\n\n");
 
-	stream_gpu_convolution(filename, &robert_kernel_3x3_h[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+	//stream_robert_gpu_convolution(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 	printf("============================\n");
-	printf("	CPU Module(Sobel)	\n");
+	printf("	CPU Module(Sobel)\n");
 	printf("============================\n\n");
 
 	cpu_module(filename, "Sample_Module_Sobel.png", &sobel_kernel_3x3_h[0][0], &sobel_kernel_3x3_v[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+
+	printf("============================\n");
+	printf("	GPU Module(Sobel) - Parallel \n");
+	printf("============================\n\n");
+
+	naive_sobel_module_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+
+	printf("============================\n");
+	printf("	GPU Module(Sobel) - Smem	\n");
+	printf("============================\n\n");
+
+	smem_sobel_module_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+
+	printf("============================\n");
+	printf("	GPU Module(Sobel) - Streams	\n");
+	printf("============================\n\n");
+
+	stream_sobel_module_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 	return 0;
 }
