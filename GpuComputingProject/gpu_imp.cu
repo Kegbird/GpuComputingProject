@@ -8,11 +8,11 @@
 
 #define STREAMS 2
 #define BLOCK_SIZES 3
-__constant__ int d_robert_kernel_3x3_h[3][3];
-__constant__ int d_robert_kernel_3x3_v[3][3];
+__constant__ float d_robert_kernel_3x3_h[3][3];
+__constant__ float d_robert_kernel_3x3_v[3][3];
 
-__constant__ int d_sobel_kernel_3x3_h[3][3];
-__constant__ int d_sobel_kernel_3x3_v[3][3];
+__constant__ float d_sobel_kernel_3x3_h[3][3];
+__constant__ float d_sobel_kernel_3x3_v[3][3];
 
 const int block_sizes[3] = { 8, 16, 32 };
 
@@ -43,10 +43,9 @@ const char* output_filename_module_stream[] = { "Sample_Sobel_Module_Stream_8x8_
 
 __device__ int grayscale(unsigned char* pixel, int channels)
 {
-	int color = 0;
+	float color = 0;
 	for (int j = 0; j < channels; j++)
-		color += pixel[j];
-	color /= channels;
+		color += pixel[j] / channels;
 	return color;
 }
 
@@ -72,7 +71,7 @@ __global__ void kernel_robert_h_convolution(unsigned char* image, unsigned char*
 	}
 	if (result < 0)
 		result = 0;
-	(filtered_image + index)[0] = result;
+	(filtered_image + index)[0] = (int)result;
 }
 
 __global__ void kernel_robert_h_convolution_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side, int kernel_size, int kernel_radius)
@@ -275,24 +274,24 @@ __global__ void kernel_module_sobel_stream(unsigned char* image, unsigned char* 
 	(filtered_image + index)[0] = result;
 }
 
-void load_constant_memory_robert_h(int* kernel, int kernel_size)
+void load_constant_memory_robert_h(float* kernel, int kernel_size)
 {
-	CHECK(cudaMemcpyToSymbol(d_robert_kernel_3x3_h, kernel, kernel_size * kernel_size * sizeof(int)));
+	CHECK(cudaMemcpyToSymbol(d_robert_kernel_3x3_h, kernel, kernel_size * kernel_size * sizeof(float)));
 }
 
-void load_constant_memory_robert_v(int* kernel, int kernel_size)
+void load_constant_memory_robert_v(float* kernel, int kernel_size)
 {
-	CHECK(cudaMemcpyToSymbol(d_robert_kernel_3x3_v, kernel, kernel_size * kernel_size * sizeof(int)));
+	CHECK(cudaMemcpyToSymbol(d_robert_kernel_3x3_v, kernel, kernel_size * kernel_size * sizeof(float)));
 }
 
-void load_constant_memory_sobel_h(int* kernel, int kernel_size)
+void load_constant_memory_sobel_h(float* kernel, int kernel_size)
 {
-	CHECK(cudaMemcpyToSymbol(d_sobel_kernel_3x3_h, kernel, kernel_size * kernel_size * sizeof(int)));
+	CHECK(cudaMemcpyToSymbol(d_sobel_kernel_3x3_h, kernel, kernel_size * kernel_size * sizeof(float)));
 }
 
-void load_constant_memory_sobel_v(int* kernel, int kernel_size)
+void load_constant_memory_sobel_v(float* kernel, int kernel_size)
 {
-	CHECK(cudaMemcpyToSymbol(d_sobel_kernel_3x3_v, kernel, kernel_size * kernel_size * sizeof(int)));
+	CHECK(cudaMemcpyToSymbol(d_sobel_kernel_3x3_v, kernel, kernel_size * kernel_size * sizeof(float)));
 }
 
 void naive_robert_convolution_gpu(char* filename, int kernel_size, int kernel_radius, bool output)
@@ -448,8 +447,8 @@ void stream_robert_convolution_gpu(char* filename, int kernel_size, int kernel_r
 			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
 			kernel_robert_h_convolution_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height / STREAMS, channels, offset_input, offset_output, kernel_size, kernel_radius);
 			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (image_size / STREAMS) - width * channels;
-			offset_output += chunk_size_result;
+			offset_input += (int)((image_size / STREAMS) - width * channels);
+			offset_output += (int)chunk_size_result;
 		}
 
 		for(int j=0; j<STREAMS; j++)
@@ -627,8 +626,8 @@ void stream_sobel_module_gpu(char * filename, int kernel_size, int kernel_radius
 			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
 			kernel_module_sobel_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height / STREAMS, channels, offset_input, offset_output, kernel_size, kernel_radius);
 			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (image_size / STREAMS) - width * channels;
-			offset_output += chunk_size_result;
+			offset_input += (int)((image_size / STREAMS) - width * channels);
+			offset_output += (int)chunk_size_result;
 		}
 
 		for (int j = 0; j < STREAMS; j++)

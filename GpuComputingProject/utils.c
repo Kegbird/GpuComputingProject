@@ -1,6 +1,8 @@
 ﻿#include "utils.h"
 #include <stdio.h>
 #include <time.h>
+#define _USE_MATH_DEFINES
+#include <math.h>
 #define STB_IMAGE_IMPLEMENTATION 
 #include <stb_image.h>
 #define STB_IMAGE_WRITE_IMPLEMENTATION 
@@ -85,4 +87,47 @@ float speedup()
 void save_file(char* filename, unsigned char* image, int width, int height, int channels)
 {
 	stbi_write_png(filename, width, height, 1, image, width*channels);
+}
+void FilterCreation(double GKernel[][5])
+{
+	// initialising standard deviation to 1.0
+	double sigma = 1.0;
+	double r, s = 2.0 * sigma * sigma;
+
+	// sum is for normalization
+	double sum = 0.0;
+
+	// generating 5x5 kernel
+	for (int x = -2; x <= 2; x++) {
+		for (int y = -2; y <= 2; y++) {
+			r = sqrt(x * x + y * y);
+			GKernel[x + 2][y + 2] = (exp(-(r * r) / s)) / (M_PI * s);
+			sum += GKernel[x + 2][y + 2];
+		}
+	}
+
+	// normalising the Kernel
+	for (int i = 0; i < 5; ++i)
+		for (int j = 0; j < 5; ++j)
+			GKernel[i][j] /= sum;
+}
+void calculate_gaussian_kernel(float* kernel, float sigma, int kernel_size, int kernel_radius)
+{
+	float sum = 0;
+	float r, s = 2.0 * sigma * sigma;
+	for (int i = -kernel_radius; i <= kernel_radius; i++)
+	{
+		for (int j = -kernel_radius; j <= kernel_radius; j++)
+		{
+			r = sqrt(i*i + j * j);
+			kernel[(i + kernel_radius)*kernel_size + j + kernel_radius] = (exp(-(r*r) / s)) / (M_PI*s);
+			sum += kernel[(i + kernel_radius)*kernel_size + j + kernel_radius];
+		}
+	}
+
+	for (int i = 0; i < kernel_size; i++)
+	{
+		for (int j = 0; j < kernel_size; j++)
+			kernel[i*kernel_size + j] /= sum;
+	}
 }
