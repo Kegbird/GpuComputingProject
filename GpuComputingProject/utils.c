@@ -119,7 +119,7 @@ void calculate_gaussian_kernel(float* kernel, float sigma, int kernel_size, int 
 	{
 		for (int j = -kernel_radius; j <= kernel_radius; j++)
 		{
-			r = sqrt(i*i + j * j);
+			r = (float)sqrt(i*i + j * j);
 			kernel[(i + kernel_radius)*kernel_size + j + kernel_radius] = (exp(-(r*r) / s)) / (M_PI*s);
 			sum += kernel[(i + kernel_radius)*kernel_size + j + kernel_radius];
 		}
