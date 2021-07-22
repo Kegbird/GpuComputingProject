@@ -3,7 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 
-bool strong_neighbour(unsigned char * pixel, float strong_value, int width)
+bool strong_neighbour(unsigned char * pixel, int strong_value, int width)
 {
 	//Inside the image
 	if (*(pixel - width - 1) == strong_value || *(pixel - width) == strong_value || *(pixel - width + 1) == strong_value
@@ -253,6 +253,7 @@ void canny_cpu(char * filename, char * output_filename, float* kernel_h, float* 
 	}
 	end_timer();
 	set_cpu_time(time_elapsed());
+	printf("Time elapsed:%f seconds\n\n", time_elapsed());
 
 	if (output)
 		save_file(output_filename, module_image, f_width, f_height, 1);

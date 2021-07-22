@@ -12,6 +12,7 @@ void stream_robert_convolution_gpu(char* filename, int kernel_size, int kernel_r
 void naive_sobel_module_gpu(char* filename, int kernel_size, int kernel_radius, bool output);
 void smem_sobel_module_gpu(char* filename, int kernel_size, int kernel_radius, bool output);
 void stream_sobel_module_gpu(char* filename, int kernel_size, int kernel_radius, bool output);
-void naive_canny_gpu(char * filename, float * kernel_h, float * kernel_v, float * gaussian_kernel, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float highthreshold_ratio, bool output);
+void naive_canny_gpu(char * filename, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output);
+void smem_canny_gpu(char * filename, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output);
 
 #endif

@@ -23,11 +23,28 @@ float robert_kernel_3x3_v[3][3] = { {0, 1, 0},{-1, 0, 0}, {0, 0, 0} };
 
 float gaussian_kernel_7x7[7][7];
 
-
 char filename[] = "Prova.png";
+
+void print_device_props()
+{
+	printf("============================\n");
+	printf("	Device info	\n");
+	printf("============================\n\n");
+	cudaDeviceProp prop;
+	cudaGetDeviceProperties(&prop, 0);
+	printf("Device name: %s\n", prop.name);
+	printf("Memory Clock Rate (KHz): %d\n",
+		prop.memoryClockRate);
+	printf("Memory Bus Width (bits): %d\n",
+		prop.memoryBusWidth);
+	printf("Peak Memory Bandwidth (GB/s): %f\n\n",
+		2.0*prop.memoryClockRate*(prop.memoryBusWidth / 8) / 1.0e6);
+}
 
 int main()
 {
+	print_device_props();
+
 	if (!check_input(filename))
 		return 0;
 	print_file_details(filename);
@@ -43,7 +60,7 @@ int main()
 	load_constant_memory_sobel_h(&sobel_kernel_3x3_h[0][0], KERNEL_SIZE);
 	load_constant_memory_sobel_v(&sobel_kernel_3x3_v[0][0], KERNEL_SIZE);
 
-	/*printf("============================\n");
+	printf("============================\n");
 	printf("	GPU Convolution(Robert) - Parallel	\n");
 	printf("============================\n\n");
 
@@ -83,7 +100,7 @@ int main()
 	printf("	GPU Module(Sobel) - Streams	\n");
 	printf("============================\n\n");
 
-	stream_sobel_module_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);*/
+	stream_sobel_module_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 	calculate_gaussian_kernel(&gaussian_kernel_7x7[0][0], SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS);
 	load_constant_memory_gaussian(&gaussian_kernel_7x7[0][0], GAUSSIAN_KERNEL_SIZE);
@@ -97,7 +114,14 @@ int main()
 	printf("============================\n");
 	printf("	GPU Canny Filter - Parallel	\n");
 	printf("============================\n\n");
-	naive_canny_gpu(filename, &sobel_kernel_3x3_h[0][0], &sobel_kernel_3x3_v[0][0], &gaussian_kernel_7x7[0][0], SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS, LOW_THRESHOLD_RATIO, HIGH_THRESHOLD_RATIO, OUTPUT);
+
+	naive_canny_gpu(filename, SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS, LOW_THRESHOLD_RATIO, HIGH_THRESHOLD_RATIO, OUTPUT);
+
+	printf("============================\n");
+	printf("	GPU Canny Filter - Smem	\n");
+	printf("============================\n\n");
+
+	smem_canny_gpu(filename, SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS, LOW_THRESHOLD_RATIO, HIGH_THRESHOLD_RATIO, OUTPUT);
 
 	return 0;
 }

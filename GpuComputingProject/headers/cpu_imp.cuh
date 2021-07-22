@@ -1,7 +1,7 @@
 ﻿#ifndef CPU_IMP
 #define CPU_IMP
 
-bool strong_neighbour(unsigned char * pixel, float strong_value, int width, int height);
+bool strong_neighbour(unsigned char * pixel, int strong_value, int width);
 float convolution_cpu(unsigned char* pixel, int channels, float* kernel, int width, int height, int kernel_size);
 void filter_cpu(char* filename, char* output_filename, float* kernel, int kernel_size, int kernel_radius, bool output);
 void module_cpu(char* filename, char* output_filename, float* kernel_h, float* kernel_v, int kernel_size, int kernel_radius, bool output);
