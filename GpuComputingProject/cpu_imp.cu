@@ -202,7 +202,7 @@ void canny_cpu(char * filename, char * output_filename, float* kernel_h, float* 
 			else
 			{
 				float angle = orientations[index];
-				float r, q;
+				int r, q;
 				if ((0.0 <= angle && angle <= 22.5) || (157.5 <= angle && angle <= 180))
 				{
 					r = module_image[index + 1];
@@ -238,6 +238,9 @@ void canny_cpu(char * filename, char * output_filename, float* kernel_h, float* 
 		}
 	}
 
+	if(output)
+		save_file(output_filename,non_max_image , f_width, f_height, 1);
+
 	//Hysteresis
 	for (int i = 0; i < f_height; i++)
 	{
@@ -255,8 +258,8 @@ void canny_cpu(char * filename, char * output_filename, float* kernel_h, float* 
 	set_cpu_time(time_elapsed());
 	printf("Time elapsed:%f seconds\n\n", time_elapsed());
 
-	if (output)
-		save_file(output_filename, module_image, f_width, f_height, 1);
+	//if (output)
+		//save_file(output_filename, non_max_image, f_width, f_height, 1);
 
 	free(image);
 	free(gaussian_filtered_image);

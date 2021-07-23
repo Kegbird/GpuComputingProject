@@ -23,7 +23,7 @@ float robert_kernel_3x3_v[3][3] = { {0, 1, 0},{-1, 0, 0}, {0, 0, 0} };
 
 float gaussian_kernel_7x7[7][7];
 
-char filename[] = "Prova.png";
+char filename[] = "A.jpg";
 
 void print_device_props()
 {
@@ -60,7 +60,7 @@ int main()
 	load_constant_memory_sobel_h(&sobel_kernel_3x3_h[0][0], KERNEL_SIZE);
 	load_constant_memory_sobel_v(&sobel_kernel_3x3_v[0][0], KERNEL_SIZE);
 
-	printf("============================\n");
+	/*printf("============================\n");
 	printf("	GPU Convolution(Robert) - Parallel	\n");
 	printf("============================\n\n");
 
@@ -101,10 +101,10 @@ int main()
 	printf("============================\n\n");
 
 	stream_sobel_module_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
-
+	*/
 	calculate_gaussian_kernel(&gaussian_kernel_7x7[0][0], SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS);
 	load_constant_memory_gaussian(&gaussian_kernel_7x7[0][0], GAUSSIAN_KERNEL_SIZE);
-
+	
 	printf("============================\n");
 	printf("	CPU Canny Filter \n");
 	printf("============================\n\n");
