@@ -64,6 +64,9 @@ const char* output_filename_module_smem[] = { "Module_Smem_16x16.png",
 const char* output_filename_module_stream[] = { "Module_Stream_16x16.png",
 									"Module_Stream_32x32.png" };
 
+const char* output_filename_module_stream_smem[] = { "Module_Stream_Smem_16x16.png",
+									"Module_Stream_Smem_32x32.png" };
+
 const char* output_filename_canny[] = { "Canny_Naive_16x16.png",
 										"Canny_Naive_32x32.png" };
 
@@ -103,6 +106,37 @@ __device__ float device_grayscale(unsigned char* pixel, int channels)
 	return color;
 }
 
+__device__ void fill_shared_memory_tile(unsigned char* pixel, unsigned char* image_tile, int width, int height, int channels, int tile_side, int tile_index, int row, int col, int kernel_radius)
+{
+	image_tile[tile_index] = device_grayscale(pixel, channels);
+
+	if ((threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1) || (row == height - (kernel_radius) * 2 - 1) || (col == width - (kernel_radius) * 2 - 1))
+	{
+		//Bottom right corner thread
+		image_tile[tile_index + 1] = device_grayscale(pixel + channels, channels);
+		image_tile[tile_index + 2] = device_grayscale(pixel + channels * 2, channels);
+		image_tile[tile_index + tile_side] = device_grayscale(pixel + width * channels, channels);
+		image_tile[tile_index + tile_side * 2] = device_grayscale(pixel + (width*channels) * 2, channels);
+
+		image_tile[tile_index + tile_side + 1] = device_grayscale(pixel + width * channels + channels, channels);
+		image_tile[tile_index + tile_side + 2] = device_grayscale(pixel + width * channels + channels * 2, channels);
+		image_tile[tile_index + tile_side * 2 + 1] = device_grayscale(pixel + width * channels * 2 + channels, channels);
+		image_tile[tile_index + tile_side * 2 + 2] = device_grayscale(pixel + width * channels * 2 + channels * 2, channels);
+	}
+	else if (threadIdx.x == blockDim.x - 1 || (col == width - (kernel_radius) * 2 - 1))
+	{
+		//Right edge thread
+		image_tile[tile_index + 1] = device_grayscale(pixel + channels, channels);
+		image_tile[tile_index + 2] = device_grayscale(pixel + channels * 2, channels);
+	}
+	else if (threadIdx.y == blockDim.y - 1 || (row == height - (kernel_radius) * 2 - 1))
+	{
+		//Bottom left corner thread
+		image_tile[tile_index + tile_side] = device_grayscale(pixel + width * channels, channels);
+		image_tile[tile_index + tile_side * 2] = device_grayscale(pixel + (width*channels) * 2, channels);
+	}
+}
+
 __device__ float device_convolution(unsigned char* pixel, int channels, int width, float* kernel, int kernel_size, int kernel_radius)
 {
 	float result = 0;
@@ -129,16 +163,17 @@ __device__ bool device_strong_neighbour(unsigned char* pixel, int width, int str
 	return false;
 }
 
-__device__ float device_module(unsigned char* pixel, int channels, int width, float* kernel_h, float* kernel_v, int kernel_size, int kernel_radius)
+__device__ float device_module(unsigned char* pixel, int channels, int width)
 {
+	int kernel_size = 3;
 	float gh = 0.0, gv = 0.0;
 	for (int i = 0; i < kernel_size; i++)
 	{
 		//Evaluating gh and gv
 		for (int j = 0; j < kernel_size; j++, pixel += channels)
 		{
-			gh += device_grayscale(pixel, channels) * kernel_h[i*kernel_size + j];
-			gv += device_grayscale(pixel, channels) * kernel_v[i*kernel_size + j];
+			gh += device_grayscale(pixel, channels) * d_sobel_kernel_3x3_h[i][j];
+			gv += device_grayscale(pixel, channels) * d_sobel_kernel_3x3_v[i][j];
 		}
 		pixel += (width * channels) - channels * (kernel_size - 1) - channels;
 	}
@@ -191,32 +226,7 @@ __global__ void kernel_convolution_smem(unsigned char* image, unsigned char* fil
 
 	int tile_index = threadIdx.y*tile_side + threadIdx.x;
 
-	image_tile[tile_index] = device_grayscale(pixel, channels);
-
-	if ((threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1) || (row == height - (kernel_radius) * 2 - 1) || (col == width - (kernel_radius) * 2 - 1))
-	{
-		//Bottom right corner thread
-		for (int i = 1; i <= kernel_radius * 2; i++)
-		{
-			image_tile[tile_index + i] = device_grayscale(pixel + channels * i, channels);
-			image_tile[tile_index + tile_side * i] = device_grayscale(pixel + width * channels * i, channels);
-
-			for (int j = 1; j <= kernel_radius * 2; j++)
-				image_tile[tile_index + tile_side * i + j] = device_grayscale(pixel + width * channels * i + channels * j, channels);
-		}
-	}
-	else if (threadIdx.x == blockDim.x - 1 || (col == width - (kernel_radius) * 2 - 1))
-	{
-		//Right edge thread
-		for (int i = 1; i <= kernel_radius * 2; i++)
-			image_tile[tile_index + i] = device_grayscale(pixel + channels * i, channels);
-	}
-	else if (threadIdx.y == blockDim.y - 1 || (row == height - (kernel_radius) * 2 - 1))
-	{
-		//Bottom left corner thread
-		for (int i = 1; i <= kernel_radius * 2; i++)
-			image_tile[tile_index + tile_side * i] = device_grayscale(pixel + width * channels * i, channels);
-	}
+	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row, col, kernel_radius);
 
 	__syncthreads();
 
@@ -301,32 +311,7 @@ __global__ void kernel_convolution_stream_smem(unsigned char* image, unsigned ch
 
 	int tile_index = threadIdx.y*tile_side + threadIdx.x;
 
-	image_tile[tile_index] = device_grayscale(pixel, channels);
-
-	if ((threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1) || (row == height - (kernel_radius) * 2 - 1) || (col == width - (kernel_radius) * 2 - 1))
-	{
-		//Bottom right corner thread
-		for (int i = 1; i <= kernel_radius * 2; i++)
-		{
-			image_tile[tile_index + i] = device_grayscale(pixel + channels * i, channels);
-			image_tile[tile_index + tile_side * i] = device_grayscale(pixel + width * channels * i, channels);
-
-			for (int j = 1; j <= kernel_radius * 2; j++)
-				image_tile[tile_index + tile_side * i + j] = device_grayscale(pixel + width * channels * i + channels * j, channels);
-		}
-	}
-	else if (threadIdx.x == blockDim.x - 1 || (col == width - (kernel_radius) * 2 - 1))
-	{
-		//Right edge thread
-		for (int i = 1; i <= kernel_radius * 2; i++)
-			image_tile[tile_index + i] = device_grayscale(pixel + channels * i, channels);
-	}
-	else if (threadIdx.y == blockDim.y - 1 || (row == height - (kernel_radius) * 2 - 1))
-	{
-		//Bottom left corner thread
-		for (int i = 1; i <= kernel_radius * 2; i++)
-			image_tile[tile_index + tile_side * i] = device_grayscale(pixel + width * channels * i, channels);
-	}
+	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row, col, kernel_radius);
 
 	__syncthreads();
 
@@ -366,25 +351,25 @@ __global__ void kernel_convolution_stream_smem(unsigned char* image, unsigned ch
 	(filtered_image + index)[0] = result;
 }
 
-__global__ void kernel_module_sobel(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int kernel_size, int kernel_radius)
+__global__ void kernel_module(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width - (kernel_radius) * 2 <= col || height - (kernel_radius) * 2 <= row)
+	if (width - 2 <= col || height - 2 <= row)
 		return;
 
-	int index = row * width + col - ((kernel_radius) * 2)*row;
+	int index = row * width + col - 2*row;
 	unsigned char* pixel = image + row * width * channels + col * channels;
-	(filtered_image + index)[0] = device_module(pixel, channels, width, &d_sobel_kernel_3x3_h[0][0], &d_sobel_kernel_3x3_v[0][0], kernel_size, kernel_radius);
+	(filtered_image + index)[0] = device_module(pixel, channels, width);
 }
 
-__global__ void kernel_module_sobel_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side, int kernel_size, int kernel_radius)
+__global__ void kernel_module_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if ((width - (kernel_radius) * 2 <= col || height - (kernel_radius) * 2 <= row))
+	if ((width - 2 <= col || height - 2 <= row))
 		return;
 
 	extern __shared__ unsigned char image_tile[];
@@ -392,64 +377,70 @@ __global__ void kernel_module_sobel_smem(unsigned char* image, unsigned char* fi
 	unsigned char *pixel = image + row * width *channels + col * channels;
 
 	int tile_index = threadIdx.y*tile_side + threadIdx.x;
-	//Image_tile contains the grayscale portion of the image on which the module will be applied
-	image_tile[tile_index] = device_grayscale(pixel, channels);
 
-	if ((threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1) || (row == height - (kernel_radius) * 2 - 1) || (col == width - (kernel_radius) * 2 - 1))
-	{
-		//Bottom right corner thread
-		image_tile[tile_index + 1] = device_grayscale(pixel + channels, channels);
-		image_tile[tile_index + 2] = device_grayscale(pixel + channels * 2, channels);
-		image_tile[tile_index + tile_side] = device_grayscale(pixel + width * channels, channels);
-		image_tile[tile_index + tile_side * 2] = device_grayscale(pixel + (width*channels) * 2, channels);
-
-		image_tile[tile_index + tile_side + 1] = device_grayscale(pixel + width * channels + channels, channels);
-		image_tile[tile_index + tile_side + 2] = device_grayscale(pixel + width * channels + channels * 2, channels);
-		image_tile[tile_index + tile_side * 2 + 1] = device_grayscale(pixel + width * channels * 2 + channels, channels);
-		image_tile[tile_index + tile_side * 2 + 2] = device_grayscale(pixel + width * channels * 2 + channels * 2, channels);
-	}
-	else if (threadIdx.x == blockDim.x - 1 || (col == width - (kernel_radius) * 2 - 1))
-	{
-		//Right edge thread
-		image_tile[tile_index + 1] = device_grayscale(pixel + channels, channels);
-		image_tile[tile_index + 2] = device_grayscale(pixel + channels * 2, channels);
-	}
-	else if (threadIdx.y == blockDim.y - 1 || (row == height - (kernel_radius) * 2 - 1))
-	{
-		//Bottom left corner thread
-		image_tile[tile_index + tile_side] = device_grayscale(pixel + width * channels, channels);
-		image_tile[tile_index + tile_side * 2] = device_grayscale(pixel + (width*channels) * 2, channels);
-	}
+	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row, col, 1);
 
 	__syncthreads();
 
-	int gh = 0;
-	int gv = 0;
-	for (int i = 0; i < kernel_size; i++)
+	float gh = 0, gv = 0;
+	for (int i = 0; i < 3; i++)
 	{
-		for (int j = 0; j < kernel_size; j++, tile_index++)
+		for (int j = 0; j < 3; j++, tile_index++)
 		{
 			gh += image_tile[tile_index] * d_sobel_kernel_3x3_h[i][j];
 			gv += image_tile[tile_index] * d_sobel_kernel_3x3_v[i][j];
 		}
-		tile_index += tile_side - kernel_radius * 2 - 1;
+		tile_index += tile_side - 3;
 	}
 
-	int index = row * width + col - ((kernel_radius) * 2)*row;
+	int index = row * width + col - 2 * row;
 	(filtered_image + index)[0] = sqrtf(gh*gh + gv * gv);
 }
 
-__global__ void kernel_module_sobel_stream(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int offset_input, int offset_output, int kernel_size, int kernel_radius)
+__global__ void kernel_module_stream(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int offset_input, int offset_output)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width - (kernel_radius) * 2 <= col || height - (kernel_radius) * 2 < row)
+	if (width - 2 <= col || height - 2 < row)
 		return;
 
 	unsigned char* pixel = image + row * width * channels + col * channels + offset_input;
-	int index = offset_output + (row * width + col - ((kernel_radius) * 2)*row);
-	(filtered_image + index)[0] = device_module(pixel, channels, width, &d_sobel_kernel_3x3_h[0][0], &d_sobel_kernel_3x3_v[0][0], kernel_size, kernel_radius);
+	int index = offset_output + (row * width + col - 2 * row);
+	(filtered_image + index)[0] = device_module(pixel, channels, width);
+}
+
+__global__ void kernel_module_stream_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side, int offset_input, int offset_output)
+{
+	int row = threadIdx.y + blockIdx.y*blockDim.y;
+	int col = threadIdx.x + blockIdx.x*blockDim.x;
+
+	if (width - 2 <= col || height - 2 <= row)
+		return;
+
+	extern __shared__ unsigned char image_tile[];
+
+	unsigned char* pixel = image + row * width * channels + col * channels + offset_input;
+
+	int tile_index = threadIdx.y*tile_side + threadIdx.x;
+
+	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row, col, 1);
+
+	__syncthreads();
+
+	float gh = 0, gv = 0;
+	for (int i = 0; i < 3; i++)
+	{
+		for (int j = 0; j < 3; j++, tile_index++)
+		{
+			gh += image_tile[tile_index] * d_sobel_kernel_3x3_h[i][j];
+			gv += image_tile[tile_index] * d_sobel_kernel_3x3_v[i][j];
+		}
+		tile_index += tile_side - 3;
+	}
+
+	int index = offset_output + (row * width + col - 2 * row);
+	(filtered_image + index)[0] = sqrtf(gh*gh + gv * gv);
 }
 
 __global__ void kernel_module_orientation(unsigned char* gaussian_filtered_image, unsigned char* module_image, float* orientations, int width, int height, int channels, int kernel_size, int kernel_radius)
@@ -640,34 +631,34 @@ __global__ void kernel_non_max_suppression_smem(unsigned char* module_image, uns
 	else if (threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.x - 1)
 	{
 		//Filling bottom right
-		image_tile[tile_index] = *(module_image+index);
-		image_tile[tile_index + 1] = *(module_image+index + 1);
-		image_tile[tile_index + tile_side] = *(module_image+index + width);
-		image_tile[tile_index + tile_side + 1] = *(module_image+index + width + 1);
+		image_tile[tile_index] = *(module_image + index);
+		image_tile[tile_index + 1] = *(module_image + index + 1);
+		image_tile[tile_index + tile_side] = *(module_image + index + width);
+		image_tile[tile_index + tile_side + 1] = *(module_image + index + width + 1);
 	}
 	else if (threadIdx.y == 0)
 	{
 		//Top edge
-		image_tile[tile_index - tile_side] = *(module_image+index - width);
-		image_tile[tile_index] = *(module_image+index);
+		image_tile[tile_index - tile_side] = *(module_image + index - width);
+		image_tile[tile_index] = *(module_image + index);
 	}
 	else if (threadIdx.x == 0)
 	{
 		//Left edge
-		image_tile[tile_index - 1] = *(module_image+index - 1);
-		image_tile[tile_index] = *(module_image+index);
+		image_tile[tile_index - 1] = *(module_image + index - 1);
+		image_tile[tile_index] = *(module_image + index);
 	}
 	else if (threadIdx.x == blockDim.x - 1)
 	{
 		//Right edge
-		image_tile[tile_index] = *(module_image+index);
-		image_tile[tile_index + 1] = *(module_image+index + 1);
+		image_tile[tile_index] = *(module_image + index);
+		image_tile[tile_index + 1] = *(module_image + index + 1);
 	}
 	else
 	{
 		//Bottom edge
-		image_tile[tile_index] = *(module_image+index);
-		image_tile[tile_index + tile_side] = *(module_image+index + width);
+		image_tile[tile_index] = *(module_image + index);
+		image_tile[tile_index + tile_side] = *(module_image + index + width);
 	}
 
 	__syncthreads();
@@ -1046,7 +1037,7 @@ void stream_smem_robert_convolution_gpu(char* filename, int kernel_size, int ker
 	cudaFreeHost(pinned_filtered_image);
 }
 
-void naive_sobel_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
+void naive_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
 {
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
@@ -1064,7 +1055,7 @@ void naive_sobel_module_gpu(char * filename, int kernel_size, int kernel_radius,
 		CHECK(cudaMalloc((void**)&d_image, image_size));
 		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
 		CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
-		kernel_module_sobel << < grid, block >> > (d_image, d_filtered_image, width, height, channels, kernel_size, kernel_radius);
+		kernel_module << < grid, block >> > (d_image, d_filtered_image, width, height, channels);
 		CHECK(cudaDeviceSynchronize());
 		CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
 
@@ -1082,7 +1073,7 @@ void naive_sobel_module_gpu(char * filename, int kernel_size, int kernel_radius,
 	free(filtered_image);
 }
 
-void smem_sobel_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
+void smem_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
 {
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
@@ -1103,7 +1094,7 @@ void smem_sobel_module_gpu(char * filename, int kernel_size, int kernel_radius, 
 		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
 		CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
 
-		kernel_module_sobel_smem << < grid, block, tile_size >> > (d_image, d_filtered_image, width, height, channels, tile_side, kernel_size, kernel_radius);
+		kernel_module_smem << < grid, block, tile_size >> > (d_image, d_filtered_image, width, height, channels, tile_side);
 
 		CHECK(cudaDeviceSynchronize());
 		CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
@@ -1122,7 +1113,7 @@ void smem_sobel_module_gpu(char * filename, int kernel_size, int kernel_radius, 
 	free(filtered_image);
 }
 
-void stream_sobel_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
+void stream_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
 {
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	//Pinned memory allocation
@@ -1160,7 +1151,7 @@ void stream_sobel_module_gpu(char * filename, int kernel_size, int kernel_radius
 		for (int j = 0; j < STREAMS; j++)
 		{
 			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			kernel_module_sobel_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height / STREAMS, channels, offset_input, offset_output, kernel_size, kernel_radius);
+			kernel_module_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height / STREAMS, channels, offset_input, offset_output);
 			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
 			offset_input += (int)((image_size / STREAMS) - width * channels);
 			offset_output += (int)chunk_size_result;
@@ -1172,6 +1163,72 @@ void stream_sobel_module_gpu(char * filename, int kernel_size, int kernel_radius
 
 		if (output)
 			save_file((char*)output_filename_module_stream[i], pinned_filtered_image, f_width, f_height, 1);
+		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+		printf("Speedup: %f %\n\n", speedup());
+
+		cudaFree(d_image);
+		cudaFree(d_filtered_image);
+	}
+
+	for (int i = 0; i < STREAMS; i++)
+		cudaStreamDestroy(stream[i]);
+
+	free(image);
+	cudaFreeHost(pinned_image);
+	cudaFreeHost(pinned_filtered_image);
+}
+
+void stream_smem_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
+{
+	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
+	//Pinned memory allocation
+	CHECK(cudaHostAlloc(&pinned_image, image_size, 0));
+	CHECK(cudaHostAlloc(&pinned_filtered_image, filtered_image_size, 0));
+	memcpy(pinned_image, image, image_size);
+
+	//Chunk_size is the chunk of the input image wich is elaborated by the stream
+	size_t chunk_size = (image_size / STREAMS) + width * channels;
+	//Chunk_size_result is the chunk of data written by kernels in the output
+	size_t chunk_size_result = filtered_image_size / STREAMS;
+
+	//Stream creation
+	cudaStream_t stream[STREAMS];
+	for (int i = 0; i < STREAMS; i++)
+		CHECK(cudaStreamCreate(&stream[i]));
+
+	for (int i = 0; i < BLOCK_SIZES; i++)
+	{
+		dim3 block = dim3(block_sizes[i], block_sizes[i]);
+		dim3 grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
+		int tile_side = block_sizes[i] + kernel_radius * 2;
+		size_t tile_size = tile_side * tile_side;
+
+		printf("Grid: %d, %d, %d\n", grid.x, grid.y, grid.z);
+		printf("Blocks: %dx%d\n", block_sizes[i], block_sizes[i]);
+		printf("Streams: %d\n", STREAMS);
+		//Offset_input is the offset from which a kernel starts to read input image data
+		int offset_input = 0;
+		//Since the input potentially has more channels than the output(the output is always in grayscale), we need a different offset.
+		int offset_output = 0;
+
+		begin_timer();
+		CHECK(cudaMalloc((void**)&d_image, image_size));
+		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
+		for (int j = 0; j < STREAMS; j++)
+		{
+			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
+			kernel_module_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_filtered_image, width, height / STREAMS, channels, tile_side, offset_input, offset_output);
+			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
+			offset_input += (int)((image_size / STREAMS) - width * channels);
+			offset_output += (int)chunk_size_result;
+		}
+
+		for (int j = 0; j < STREAMS; j++)
+			CHECK(cudaStreamSynchronize(stream[j]));
+		end_timer();
+
+		if (output)
+			save_file((char*)output_filename_module_stream_smem[i], pinned_filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
 		printf("Speedup: %f %\n\n", speedup());
 
