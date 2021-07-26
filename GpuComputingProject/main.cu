@@ -23,7 +23,7 @@ float robert_kernel_3x3_v[3][3] = { {0, 1, 0},{-1, 0, 0}, {0, 0, 0} };
 
 float gaussian_kernel_7x7[7][7];
 
-char filename[] = "A.jpg";
+char filename[] = "Sample.png";
 
 void print_device_props()
 {
@@ -52,7 +52,7 @@ int main()
 	printf("============================\n");
 	printf("	CPU Convolution(Robert)	\n");
 	printf("============================\n\n");
-	filter_cpu(filename, "Sample_Robert.png", &robert_kernel_3x3_h[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+	filter_cpu(filename, "CPU_Conv_Robert.png", &robert_kernel_3x3_h[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 	load_constant_memory_robert_h(&robert_kernel_3x3_h[0][0], KERNEL_SIZE);
 	load_constant_memory_robert_v(&robert_kernel_3x3_v[0][0], KERNEL_SIZE);
@@ -60,7 +60,7 @@ int main()
 	load_constant_memory_sobel_h(&sobel_kernel_3x3_h[0][0], KERNEL_SIZE);
 	load_constant_memory_sobel_v(&sobel_kernel_3x3_v[0][0], KERNEL_SIZE);
 
-	/*printf("============================\n");
+	printf("============================\n");
 	printf("	GPU Convolution(Robert) - Parallel	\n");
 	printf("============================\n\n");
 
@@ -79,10 +79,16 @@ int main()
 	stream_robert_convolution_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 	printf("============================\n");
+	printf("	GPU Convolution(Robert) - Streams and Smem	\n");
+	printf("============================\n\n");
+
+	stream_smem_robert_convolution_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+
+	/*printf("============================\n");
 	printf("	CPU Module(Sobel)\n");
 	printf("============================\n\n");
 
-	module_cpu(filename, "Sample_Module_Sobel.png", &sobel_kernel_3x3_h[0][0], &sobel_kernel_3x3_v[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+	module_cpu(filename, "CPU_Module.png", &sobel_kernel_3x3_h[0][0], &sobel_kernel_3x3_v[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 	printf("============================\n");
 	printf("	GPU Module(Sobel) - Parallel \n");
@@ -101,7 +107,7 @@ int main()
 	printf("============================\n\n");
 
 	stream_sobel_module_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
-	*/
+	
 	calculate_gaussian_kernel(&gaussian_kernel_7x7[0][0], SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS);
 	load_constant_memory_gaussian(&gaussian_kernel_7x7[0][0], GAUSSIAN_KERNEL_SIZE);
 	
@@ -109,7 +115,7 @@ int main()
 	printf("	CPU Canny Filter \n");
 	printf("============================\n\n");
 
-	canny_cpu(filename, "Sample_Canny.png", &sobel_kernel_3x3_h[0][0], &sobel_kernel_3x3_v[0][0], &gaussian_kernel_7x7[0][0], SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS, LOW_THRESHOLD_RATIO, HIGH_THRESHOLD_RATIO, OUTPUT);
+	canny_cpu(filename, "CPU_Canny.png", &sobel_kernel_3x3_h[0][0], &sobel_kernel_3x3_v[0][0], &gaussian_kernel_7x7[0][0], SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS, LOW_THRESHOLD_RATIO, HIGH_THRESHOLD_RATIO, OUTPUT);
 
 	printf("============================\n");
 	printf("	GPU Canny Filter - Parallel	\n");
@@ -121,7 +127,7 @@ int main()
 	printf("	GPU Canny Filter - Smem	\n");
 	printf("============================\n\n");
 
-	smem_canny_gpu(filename, SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS, LOW_THRESHOLD_RATIO, HIGH_THRESHOLD_RATIO, OUTPUT);
+	smem_canny_gpu(filename, SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS, LOW_THRESHOLD_RATIO, HIGH_THRESHOLD_RATIO, OUTPUT);*/
 
 	return 0;
 }

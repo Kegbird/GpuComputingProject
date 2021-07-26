@@ -43,30 +43,32 @@ int channels;
 size_t image_size;
 size_t filtered_image_size;
 
-const char* output_filename_robert[] = { "Sample_Naive_Convolution_Robert_16x16_block.png",
-									"Sample_Naive_Convolution_Robert_32x32_block.png" };
+const char* output_filename_robert[] = { "Conv_Robert_Naive_16x16.png",
+									"Conv_Robert_Naive_32x32.png" };
 
-const char* output_filename_robert_smem[] = { "Sample_Convolution_Robert_Smem_16x16_block.png",
-									"Sample_Convolution_Robert_Smem_32x32_block.png" };
+const char* output_filename_robert_smem[] = { "Conv_Robert_Smem_16x16.png",
+									"Conv_Robert_Smem_32x32.png" };
 
-const char* output_filename_robert_stream[] = { "Sample_Convolution_Robert_Stream_16x16_block.png",
-									"Sample_Convolution_Robert_Stream_32x32_block.png" };
+const char* output_filename_robert_stream[] = { "Conv_Robert_Stream_16x16.png",
+									"Conv_Robert_Stream_32x32.png" };
 
+const char* output_filename_robert_stream_smem[] = { "Conv_Robert_Smem_Stream_16x16.png",
+									"Conv_Robert_Smem_Stream_32x32.png" };
 
-const char* output_filename_module[] = { "Sample_Naive_Sobel_Module_16x16_block.png",
-									"Sample_Naive_Sobel_Module_32x32_block.png" };
+const char* output_filename_module[] = { "Module_Naive_16x16.png",
+									"Module_Naive_32x32.png" };
 
-const char* output_filename_module_smem[] = { "Sample_Sobel_Module_Smem_16x16_block.png",
-									"Sample_Sobel_Module_Smem_32x32_block.png" };
+const char* output_filename_module_smem[] = { "Module_Smem_16x16.png",
+									"Module_Smem_32x32.png" };
 
-const char* output_filename_module_stream[] = { "Sample_Sobel_Module_Stream_16x16_block.png",
-									"Sample_Sobel_Module_Stream_32x32_block.png" };
+const char* output_filename_module_stream[] = { "Module_Stream_16x16.png",
+									"Module_Stream_32x32.png" };
 
-const char* output_filename_canny[] = { "Sample_Naive_Canny_16x16_block.png",
-										"Sample_Naive_Canny_32x32_block.png" };
+const char* output_filename_canny[] = { "Canny_Naive_16x16.png",
+										"Canny_Naive_32x32.png" };
 
-const char* output_filename_canny_smem[] = { "Sample_Canny_Smem_16x16_block.png",
-										"Sample_Canny_Smem_32x32_block.png" };
+const char* output_filename_canny_smem[] = { "Canny_Smem_16x16.png",
+										"Canny_Smem_32x32.png" };
 
 void load_constant_memory_robert_h(float* kernel, int kernel_size)
 {
@@ -138,7 +140,7 @@ __device__ float device_module(unsigned char* pixel, int channels, int width, fl
 			gh += device_grayscale(pixel, channels) * kernel_h[i*kernel_size + j];
 			gv += device_grayscale(pixel, channels) * kernel_v[i*kernel_size + j];
 		}
-		pixel += (width * channels) - channels * (kernel_size - 1);
+		pixel += (width * channels) - channels * (kernel_size - 1) - channels;
 	}
 
 	return sqrtf(gh*gh + gv * gv);
@@ -285,6 +287,85 @@ __global__ void kernel_convolution_stream(unsigned char* image, unsigned char* f
 	}
 }
 
+__global__ void kernel_convolution_stream_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side, int offset_input, int offset_output, int kernel_size, int kernel_radius, int kernel_code)
+{
+	int row = threadIdx.y + blockIdx.y*blockDim.y;
+	int col = threadIdx.x + blockIdx.x*blockDim.x;
+
+	if (width - (kernel_radius) * 2 <= col || height - (kernel_radius) * 2 < row)
+		return;
+
+	extern __shared__ unsigned char image_tile[];
+
+	unsigned char* pixel = image + row * width * channels + col * channels + offset_input;
+
+	int tile_index = threadIdx.y*tile_side + threadIdx.x;
+
+	image_tile[tile_index] = device_grayscale(pixel, channels);
+
+	if ((threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1) || (row == height - (kernel_radius) * 2 - 1) || (col == width - (kernel_radius) * 2 - 1))
+	{
+		//Bottom right corner thread
+		for (int i = 1; i <= kernel_radius * 2; i++)
+		{
+			image_tile[tile_index + i] = device_grayscale(pixel + channels * i, channels);
+			image_tile[tile_index + tile_side * i] = device_grayscale(pixel + width * channels * i, channels);
+
+			for (int j = 1; j <= kernel_radius * 2; j++)
+				image_tile[tile_index + tile_side * i + j] = device_grayscale(pixel + width * channels * i + channels * j, channels);
+		}
+	}
+	else if (threadIdx.x == blockDim.x - 1 || (col == width - (kernel_radius) * 2 - 1))
+	{
+		//Right edge thread
+		for (int i = 1; i <= kernel_radius * 2; i++)
+			image_tile[tile_index + i] = device_grayscale(pixel + channels * i, channels);
+	}
+	else if (threadIdx.y == blockDim.y - 1 || (row == height - (kernel_radius) * 2 - 1))
+	{
+		//Bottom left corner thread
+		for (int i = 1; i <= kernel_radius * 2; i++)
+			image_tile[tile_index + tile_side * i] = device_grayscale(pixel + width * channels * i, channels);
+	}
+
+	__syncthreads();
+
+	float result = 0;
+
+	float *kernel;
+
+	switch (kernel_code)
+	{
+	case GAUSS_KERNEL_CODE:
+		kernel = &d_gaussian_kernel_7x7[0][0];
+		break;
+	case SOBEL_KERNEL_CODE_H:
+		kernel = &d_sobel_kernel_3x3_h[0][0];
+		break;
+	case SOBEL_KERNEL_CODE_V:
+		kernel = &d_sobel_kernel_3x3_v[0][0];
+		break;
+	case ROBERT_KERNEL_CODE_H:
+		kernel = &d_robert_kernel_3x3_h[0][0];
+		break;
+	default:
+		kernel = &d_robert_kernel_3x3_v[0][0];
+		break;
+	}
+
+	for (int i = 0; i < kernel_size; i++)
+	{
+		for (int j = 0; j < kernel_size; j++, tile_index++)
+			result += image_tile[tile_index] * kernel[i*kernel_size + j];
+		tile_index += tile_side - kernel_radius * 2 - 1;
+	}
+	if (result < 0)
+		result = 0;
+
+	int index = offset_output + (row * width + col - ((kernel_radius) * 2)*row);
+	(filtered_image + index)[0] = result;
+}
+
 __global__ void kernel_module_sobel(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int kernel_size, int kernel_radius)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
@@ -342,7 +423,8 @@ __global__ void kernel_module_sobel_smem(unsigned char* image, unsigned char* fi
 
 	__syncthreads();
 
-	float gh = 0, gv = 0;
+	int gh = 0;
+	int gv = 0;
 	for (int i = 0; i < kernel_size; i++)
 	{
 		for (int j = 0; j < kernel_size; j++, tile_index++)
@@ -350,7 +432,7 @@ __global__ void kernel_module_sobel_smem(unsigned char* image, unsigned char* fi
 			gh += image_tile[tile_index] * d_sobel_kernel_3x3_h[i][j];
 			gv += image_tile[tile_index] * d_sobel_kernel_3x3_v[i][j];
 		}
-		tile_index += tile_side - kernel_radius * 2;
+		tile_index += tile_side - kernel_radius * 2 - 1;
 	}
 
 	int index = row * width + col - ((kernel_radius) * 2)*row;
@@ -528,64 +610,64 @@ __global__ void kernel_non_max_suppression_smem(unsigned char* module_image, uns
 	if (row == 0 || col == 0 || row == height - 1 || col == width - 1)
 	{
 		//Image corners
-		image_tile[tile_index] = module_image[index];
+		image_tile[tile_index] = *(module_image + index);
 	}
 	else if (threadIdx.x == 0 && threadIdx.y == 0)
 	{
 		//Filling block top left corner
-		image_tile[0] = module_image[index - width - 1];
-		image_tile[1] = module_image[index - width];
-		image_tile[tile_side - 1] = module_image[index - 1];
-		image_tile[tile_index] = module_image[index];
+		image_tile[0] = *(module_image + index - width - 1);
+		image_tile[1] = *(module_image + index - width);
+		image_tile[tile_side - 1] = *(module_image + index - 1);
+		image_tile[tile_index] = *(module_image + index);
 	}
 	else if (threadIdx.x == blockDim.x - 1 && threadIdx.y == 0)
 	{
 		//Filling top right corner
-		image_tile[tile_index - tile_side] = module_image[index - width];
-		image_tile[tile_index - tile_side + 1] = module_image[index - width + 1];
-		image_tile[tile_index] = module_image[index];
-		image_tile[tile_index + 1] = module_image[index + 1];
+		image_tile[tile_index - tile_side] = *(module_image + index - width);
+		image_tile[tile_index - tile_side + 1] = *(module_image + index - width + 1);
+		image_tile[tile_index] = *(module_image + index);
+		image_tile[tile_index + 1] = *(module_image + index + 1);
 	}
 	else if (threadIdx.x == 0 && threadIdx.y == blockDim.y - 1)
 	{
 		//Filling bottom left
-		image_tile[tile_index - 1] = module_image[index - 1];
-		image_tile[tile_index] = module_image[index];
-		image_tile[tile_index + tile_side - 1] = module_image[index + width - 1];
-		image_tile[tile_index + tile_side] = module_image[index + width];
+		image_tile[tile_index - 1] = *(module_image + index - 1);
+		image_tile[tile_index] = *(module_image + index);
+		image_tile[tile_index + tile_side - 1] = *(module_image + index + width - 1);
+		image_tile[tile_index + tile_side] = *(module_image + index + width);
 
 	}
 	else if (threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.x - 1)
 	{
 		//Filling bottom right
-		image_tile[tile_index] = module_image[index];
-		image_tile[tile_index + 1] = module_image[index + 1];
-		image_tile[tile_index + tile_side] = module_image[index + width];
-		image_tile[tile_index + tile_side + 1] = module_image[index + width + 1];
+		image_tile[tile_index] = *(module_image+index);
+		image_tile[tile_index + 1] = *(module_image+index + 1);
+		image_tile[tile_index + tile_side] = *(module_image+index + width);
+		image_tile[tile_index + tile_side + 1] = *(module_image+index + width + 1);
 	}
 	else if (threadIdx.y == 0)
 	{
 		//Top edge
-		image_tile[tile_index - tile_side] = module_image[index - width];
-		image_tile[tile_index] = module_image[index];
+		image_tile[tile_index - tile_side] = *(module_image+index - width);
+		image_tile[tile_index] = *(module_image+index);
 	}
 	else if (threadIdx.x == 0)
 	{
 		//Left edge
-		image_tile[tile_index - 1] = module_image[index - 1];
-		image_tile[tile_index] = module_image[index];
+		image_tile[tile_index - 1] = *(module_image+index - 1);
+		image_tile[tile_index] = *(module_image+index);
 	}
 	else if (threadIdx.x == blockDim.x - 1)
 	{
 		//Right edge
-		image_tile[tile_index] = module_image[index];
-		image_tile[tile_index + 1] = module_image[index + 1];
+		image_tile[tile_index] = *(module_image+index);
+		image_tile[tile_index + 1] = *(module_image+index + 1);
 	}
 	else
 	{
 		//Bottom edge
-		image_tile[tile_index] = module_image[index];
-		image_tile[tile_index + tile_side] = module_image[index + width];
+		image_tile[tile_index] = *(module_image+index);
+		image_tile[tile_index + tile_side] = *(module_image+index + width);
 	}
 
 	__syncthreads();
@@ -888,6 +970,73 @@ void stream_robert_convolution_gpu(char* filename, int kernel_size, int kernel_r
 		cudaFree(d_filtered_image);
 	}
 
+
+	for (int i = 0; i < STREAMS; i++)
+		cudaStreamDestroy(stream[i]);
+
+	free(image);
+	cudaFreeHost(pinned_image);
+	cudaFreeHost(pinned_filtered_image);
+}
+
+void stream_smem_robert_convolution_gpu(char* filename, int kernel_size, int kernel_radius, bool output)
+{
+	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
+	//Pinned memory allocation
+	CHECK(cudaHostAlloc(&pinned_image, image_size, 0));
+	CHECK(cudaHostAlloc(&pinned_filtered_image, filtered_image_size, 0));
+	memcpy(pinned_image, image, image_size);
+
+	//Chunk_size is the chunk of the input image wich is elaborated by the stream
+	size_t chunk_size = (image_size / STREAMS) + width * channels;
+	//Chunk_size_result is the chunk of data written by kernels in the output
+	size_t chunk_size_result = filtered_image_size / STREAMS;
+
+	//Stream creation
+	cudaStream_t stream[STREAMS];
+	for (int i = 0; i < STREAMS; i++)
+		CHECK(cudaStreamCreate(&stream[i]));
+
+	for (int i = 0; i < BLOCK_SIZES; i++)
+	{
+		dim3 block = dim3(block_sizes[i], block_sizes[i]);
+		dim3 grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
+
+		printf("Grid: %d, %d, %d\n", grid.x, grid.y, grid.z);
+		printf("Blocks: %dx%d\n", block_sizes[i], block_sizes[i]);
+		printf("Streams: %d\n", STREAMS);
+		int tile_side = block_sizes[i] + kernel_radius * 2;
+		size_t tile_size = tile_side * tile_side;
+		//Offset_input is the offset from which a kernel starts to read input image data
+		int offset_input = 0;
+		//Since the input potentially has more channels than the output(the output is always in grayscale), we need a different offset.
+		int offset_output = 0;
+
+		begin_timer();
+
+		CHECK(cudaMalloc((void**)&d_image, image_size));
+		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
+		for (int j = 0; j < STREAMS; j++)
+		{
+			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
+			kernel_convolution_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_filtered_image, width, height / STREAMS, channels, tile_side, offset_input, offset_output, kernel_size, kernel_radius, ROBERT_KERNEL_CODE_H);
+			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
+			offset_input += (int)((image_size / STREAMS) - width * channels);
+			offset_output += (int)chunk_size_result;
+		}
+
+		for (int j = 0; j < STREAMS; j++)
+			CHECK(cudaStreamSynchronize(stream[j]));
+		end_timer();
+
+		if (output)
+			save_file((char*)output_filename_robert_stream_smem[i], pinned_filtered_image, f_width, f_height, 1);
+		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+		printf("Speedup: %f %\n\n", speedup());
+
+		cudaFree(d_image);
+		cudaFree(d_filtered_image);
+	}
 
 	for (int i = 0; i < STREAMS; i++)
 		cudaStreamDestroy(stream[i]);
