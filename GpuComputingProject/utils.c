@@ -11,7 +11,7 @@
 clock_t begin, end;
 float cpu_time = 1;
 
-bool check_input(char* filename)
+bool check_input(const char* filename)
 {
 	unsigned char* image;
 	int width, height, channels;
@@ -32,7 +32,7 @@ bool check_input(char* filename)
 	return true;
 }
 
-unsigned char* load_file_details(char* filename, int* width, int* height, int* channels, size_t* image_size, size_t* filtered_image_size, int* f_width, int* f_height, int kernel_radius)
+unsigned char* load_file_details(const char* filename, int* width, int* height, int* channels, size_t* image_size, size_t* filtered_image_size, int* f_width, int* f_height, int kernel_radius)
 {
 	unsigned char* image = stbi_load(filename, width, height, channels, 0);
 	*image_size = *width * *height * *channels;
@@ -42,7 +42,7 @@ unsigned char* load_file_details(char* filename, int* width, int* height, int* c
 	return image;
 }
 
-void print_file_details(char* filename)
+void print_file_details(const char* filename)
 {
 	unsigned char* image;
 	int width, height, channels;
@@ -84,7 +84,7 @@ float speedup()
 	return 0;
 }
 
-void save_file(char* filename, unsigned char* image, int width, int height, int channels)
+void save_file(const char* filename, unsigned char* image, int width, int height, int channels)
 {
 	stbi_write_png(filename, width, height, 1, image, width*channels);
 }

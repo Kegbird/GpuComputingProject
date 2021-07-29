@@ -5,7 +5,7 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-#define STREAMS 2
+#define STREAMS 8
 #define BLOCK_SIZES 2
 
 #define GAUSS_KERNEL_CODE 0
@@ -73,6 +73,9 @@ const char* output_filename_canny[] = { "Canny_Naive_16x16.png",
 const char* output_filename_canny_smem[] = { "Canny_Smem_16x16.png",
 										"Canny_Smem_32x32.png" };
 
+const char* output_filename_canny_stream[] = { "Canny_Stream_16x16.png",
+										"Canny_Stream_32x32.png" };
+
 void load_constant_memory_robert_h(float* kernel, int kernel_size)
 {
 	CHECK(cudaMemcpyToSymbol(d_robert_kernel_3x3_h, kernel, kernel_size * kernel_size * sizeof(float)));
@@ -113,28 +116,28 @@ __device__ void fill_shared_memory_tile(unsigned char* pixel, unsigned char* ima
 	if ((threadIdx.x == blockDim.x - 1 && threadIdx.y == blockDim.y - 1) || (row == height - (kernel_radius) * 2 - 1) || (col == width - (kernel_radius) * 2 - 1))
 	{
 		//Bottom right corner thread
-		image_tile[tile_index + 1] = device_grayscale(pixel + channels, channels);
-		image_tile[tile_index + 2] = device_grayscale(pixel + channels * 2, channels);
-		image_tile[tile_index + tile_side] = device_grayscale(pixel + width * channels, channels);
-		image_tile[tile_index + tile_side * 2] = device_grayscale(pixel + (width*channels) * 2, channels);
+		for (int i = 1; i <= kernel_radius * 2; i++)
+		{
+			image_tile[tile_index + i] = device_grayscale(pixel + channels * i, channels);
+			image_tile[tile_index + tile_side * i] = device_grayscale(pixel + width * channels * i, channels);
 
-		image_tile[tile_index + tile_side + 1] = device_grayscale(pixel + width * channels + channels, channels);
-		image_tile[tile_index + tile_side + 2] = device_grayscale(pixel + width * channels + channels * 2, channels);
-		image_tile[tile_index + tile_side * 2 + 1] = device_grayscale(pixel + width * channels * 2 + channels, channels);
-		image_tile[tile_index + tile_side * 2 + 2] = device_grayscale(pixel + width * channels * 2 + channels * 2, channels);
+			for (int j = 1; j <= kernel_radius * 2; j++)
+				image_tile[tile_index + tile_side * i + j] = device_grayscale(pixel + width * channels * i + channels * j, channels);
+		}
 	}
 	else if (threadIdx.x == blockDim.x - 1 || (col == width - (kernel_radius) * 2 - 1))
 	{
 		//Right edge thread
-		image_tile[tile_index + 1] = device_grayscale(pixel + channels, channels);
-		image_tile[tile_index + 2] = device_grayscale(pixel + channels * 2, channels);
+		for (int i = 1; i <= kernel_radius * 2; i++)
+			image_tile[tile_index + i] = device_grayscale(pixel + channels * i, channels);
 	}
 	else if (threadIdx.y == blockDim.y - 1 || (row == height - (kernel_radius) * 2 - 1))
 	{
 		//Bottom left corner thread
-		image_tile[tile_index + tile_side] = device_grayscale(pixel + width * channels, channels);
-		image_tile[tile_index + tile_side * 2] = device_grayscale(pixel + (width*channels) * 2, channels);
+		for (int i = 1; i <= kernel_radius * 2; i++)
+			image_tile[tile_index + tile_side * i] = device_grayscale(pixel + width * channels * i, channels);
 	}
+
 }
 
 __device__ float device_convolution(unsigned char* pixel, int channels, int width, float* kernel, int kernel_size, int kernel_radius)
@@ -266,16 +269,16 @@ __global__ void kernel_convolution_smem(unsigned char* image, unsigned char* fil
 	(filtered_image + index)[0] = result;
 }
 
-__global__ void kernel_convolution_stream(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int offset_input, int offset_output, int kernel_size, int kernel_radius, int kernel_code)
+__global__ void kernel_convolution_stream(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int row_offset, int image_offset, int filtered_image_offset, int kernel_size, int kernel_radius, int kernel_code)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
-
-	if (width - (kernel_radius) * 2 <= col || height - (kernel_radius) * 2 < row)
+	
+	if (width - (kernel_radius) * 2 <= col || height - (kernel_radius) * 2 <= row + row_offset)
 		return;
 
-	unsigned char* pixel = image + row * width * channels + col * channels + offset_input;
-	int index = offset_output + (row * width + col - ((kernel_radius) * 2)*row);
+	unsigned char* pixel = image + (row * width * channels + col * channels) + image_offset;
+	int index = row * (width - kernel_radius * 2) + col + filtered_image_offset;
 
 	switch (kernel_code)
 	{
@@ -302,7 +305,7 @@ __global__ void kernel_convolution_stream_smem(unsigned char* image, unsigned ch
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width - (kernel_radius) * 2 <= col || height - (kernel_radius) * 2 < row)
+	if (width - (kernel_radius) * 2 <= col || height - kernel_radius < row)
 		return;
 
 	extern __shared__ unsigned char image_tile[];
@@ -402,7 +405,7 @@ __global__ void kernel_module_stream(unsigned char* image, unsigned char* filter
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width - 2 <= col || height - 2 < row)
+	if (width - 2 <= col || height - 1 < row)
 		return;
 
 	unsigned char* pixel = image + row * width * channels + col * channels + offset_input;
@@ -415,7 +418,7 @@ __global__ void kernel_module_stream_smem(unsigned char* image, unsigned char* f
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width - 2 <= col || height - 2 <= row)
+	if (width - 2 <= col || height < row)
 		return;
 
 	extern __shared__ unsigned char image_tile[];
@@ -427,6 +430,9 @@ __global__ void kernel_module_stream_smem(unsigned char* image, unsigned char* f
 	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row, col, 1);
 
 	__syncthreads();
+
+	if (height - 1 < row)
+		return;
 
 	float gh = 0, gv = 0;
 	for (int i = 0; i < 3; i++)
@@ -828,7 +834,7 @@ __global__ void kernel_hysteresis_smem(unsigned char* non_max_image, unsigned ch
 	}
 }
 
-void naive_robert_convolution_gpu(char* filename, int kernel_size, int kernel_radius, bool output)
+void naive_robert_convolution_gpu(const char* filename, int kernel_size, int kernel_radius, bool output)
 {
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
@@ -853,9 +859,9 @@ void naive_robert_convolution_gpu(char* filename, int kernel_size, int kernel_ra
 		end_timer();
 
 		if (output)
-			save_file((char*)output_filename_robert[i], filtered_image, f_width, f_height, 1);
+			save_file(output_filename_robert[i], filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f %\n\n", speedup());
+		printf("Speedup: %f\n\n", speedup());
 
 		cudaFree(d_image);
 		cudaFree(d_filtered_image);
@@ -864,7 +870,7 @@ void naive_robert_convolution_gpu(char* filename, int kernel_size, int kernel_ra
 	free(filtered_image);
 }
 
-void smem_robert_convolution_gpu(char* filename, int kernel_size, int kernel_radius, bool output)
+void smem_robert_convolution_gpu(const char* filename, int kernel_size, int kernel_radius, bool output)
 {
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
@@ -893,9 +899,9 @@ void smem_robert_convolution_gpu(char* filename, int kernel_size, int kernel_rad
 		end_timer();
 
 		if (output)
-			save_file((char*)output_filename_robert_smem[i], filtered_image, f_width, f_height, 1);
+			save_file(output_filename_robert_smem[i], filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f %\n\n", speedup());
+		printf("Speedup: %f\n\n", speedup());
 
 		cudaFree(d_image);
 		cudaFree(d_filtered_image);
@@ -904,7 +910,7 @@ void smem_robert_convolution_gpu(char* filename, int kernel_size, int kernel_rad
 	free(filtered_image);
 }
 
-void stream_robert_convolution_gpu(char* filename, int kernel_size, int kernel_radius, bool output)
+void stream_robert_convolution_gpu(const char* filename, int kernel_size, int kernel_radius, bool output)
 {
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	//Pinned memory allocation
@@ -913,7 +919,7 @@ void stream_robert_convolution_gpu(char* filename, int kernel_size, int kernel_r
 	memcpy(pinned_image, image, image_size);
 
 	//Chunk_size is the chunk of the input image wich is elaborated by the stream
-	size_t chunk_size = (image_size / STREAMS) + width * channels;
+	size_t chunk_size = (image_size / STREAMS)+width*channels;
 	//Chunk_size_result is the chunk of data written by kernels in the output
 	size_t chunk_size_result = filtered_image_size / STREAMS;
 
@@ -934,6 +940,9 @@ void stream_robert_convolution_gpu(char* filename, int kernel_size, int kernel_r
 		int offset_input = 0;
 		//Since the input potentially has more channels than the output(the output is always in grayscale), we need a different offset.
 		int offset_output = 0;
+		int row_offset = 0;
+		int image_offset = 0;
+		int filtered_image_offset = 0;
 
 		begin_timer();
 
@@ -941,11 +950,14 @@ void stream_robert_convolution_gpu(char* filename, int kernel_size, int kernel_r
 		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
 		for (int j = 0; j < STREAMS; j++)
 		{
+			row_offset = j * (height / STREAMS);
+			image_offset = j * width*(height / STREAMS)*channels;
+			filtered_image_offset = j * (width - kernel_radius * 2)*(height / STREAMS);
 			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			kernel_convolution_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height / STREAMS, channels, offset_input, offset_output, kernel_size, kernel_radius, ROBERT_KERNEL_CODE_H);
+			kernel_convolution_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height, channels, row_offset, image_offset, filtered_image_offset, kernel_size, kernel_radius, ROBERT_KERNEL_CODE_H);
 			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (int)((image_size / STREAMS) - width * channels);
-			offset_output += (int)chunk_size_result;
+			offset_input += (image_size / STREAMS) - width * channels;
+			offset_output += chunk_size_result;
 		}
 
 		for (int j = 0; j < STREAMS; j++)
@@ -953,9 +965,9 @@ void stream_robert_convolution_gpu(char* filename, int kernel_size, int kernel_r
 		end_timer();
 
 		if (output)
-			save_file((char*)output_filename_robert_stream[i], pinned_filtered_image, f_width, f_height, 1);
+			save_file(output_filename_robert_stream[i], pinned_filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f %\n\n", speedup());
+		printf("Speedup: %f\n\n", speedup());
 
 		cudaFree(d_image);
 		cudaFree(d_filtered_image);
@@ -970,9 +982,9 @@ void stream_robert_convolution_gpu(char* filename, int kernel_size, int kernel_r
 	cudaFreeHost(pinned_filtered_image);
 }
 
-void stream_smem_robert_convolution_gpu(char* filename, int kernel_size, int kernel_radius, bool output)
+void stream_smem_robert_convolution_gpu(const char* filename, int kernel_size, int kernel_radius, bool output)
 {
-	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
+	/*image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	//Pinned memory allocation
 	CHECK(cudaHostAlloc(&pinned_image, image_size, 0));
 	CHECK(cudaHostAlloc(&pinned_filtered_image, filtered_image_size, 0));
@@ -1021,9 +1033,9 @@ void stream_smem_robert_convolution_gpu(char* filename, int kernel_size, int ker
 		end_timer();
 
 		if (output)
-			save_file((char*)output_filename_robert_stream_smem[i], pinned_filtered_image, f_width, f_height, 1);
+			save_file(output_filename_robert_stream_smem[i], pinned_filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f %\n\n", speedup());
+		printf("Speedup: %f\n\n", speedup());
 
 		cudaFree(d_image);
 		cudaFree(d_filtered_image);
@@ -1034,10 +1046,10 @@ void stream_smem_robert_convolution_gpu(char* filename, int kernel_size, int ker
 
 	free(image);
 	cudaFreeHost(pinned_image);
-	cudaFreeHost(pinned_filtered_image);
+	cudaFreeHost(pinned_filtered_image);*/
 }
 
-void naive_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
+void naive_module_gpu(const char * filename, int kernel_size, int kernel_radius, bool output)
 {
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
@@ -1062,9 +1074,9 @@ void naive_module_gpu(char * filename, int kernel_size, int kernel_radius, bool 
 		end_timer();
 
 		if (output)
-			save_file((char*)output_filename_module[i], filtered_image, f_width, f_height, 1);
+			save_file(output_filename_module[i], filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f %\n\n", speedup());
+		printf("Speedup: %f\n\n", speedup());
 
 		cudaFree(d_image);
 		cudaFree(d_filtered_image);
@@ -1073,7 +1085,7 @@ void naive_module_gpu(char * filename, int kernel_size, int kernel_radius, bool 
 	free(filtered_image);
 }
 
-void smem_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
+void smem_module_gpu(const char * filename, int kernel_size, int kernel_radius, bool output)
 {
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
@@ -1102,9 +1114,9 @@ void smem_module_gpu(char * filename, int kernel_size, int kernel_radius, bool o
 		end_timer();
 
 		if (output)
-			save_file((char*)output_filename_module_smem[i], filtered_image, f_width, f_height, 1);
+			save_file(output_filename_module_smem[i], filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f %\n\n", speedup());
+		printf("Speedup: %f\n\n", speedup());
 
 		cudaFree(d_image);
 		cudaFree(d_filtered_image);
@@ -1113,7 +1125,7 @@ void smem_module_gpu(char * filename, int kernel_size, int kernel_radius, bool o
 	free(filtered_image);
 }
 
-void stream_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
+void stream_module_gpu(const char * filename, int kernel_size, int kernel_radius, bool output)
 {
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	//Pinned memory allocation
@@ -1162,9 +1174,9 @@ void stream_module_gpu(char * filename, int kernel_size, int kernel_radius, bool
 		end_timer();
 
 		if (output)
-			save_file((char*)output_filename_module_stream[i], pinned_filtered_image, f_width, f_height, 1);
+			save_file(output_filename_module_stream[i], pinned_filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f %\n\n", speedup());
+		printf("Speedup: %f\n\n", speedup());
 
 		cudaFree(d_image);
 		cudaFree(d_filtered_image);
@@ -1178,7 +1190,7 @@ void stream_module_gpu(char * filename, int kernel_size, int kernel_radius, bool
 	cudaFreeHost(pinned_filtered_image);
 }
 
-void stream_smem_module_gpu(char * filename, int kernel_size, int kernel_radius, bool output)
+void stream_smem_module_gpu(const char * filename, int kernel_size, int kernel_radius, bool output)
 {
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	//Pinned memory allocation
@@ -1228,9 +1240,9 @@ void stream_smem_module_gpu(char * filename, int kernel_size, int kernel_radius,
 		end_timer();
 
 		if (output)
-			save_file((char*)output_filename_module_stream_smem[i], pinned_filtered_image, f_width, f_height, 1);
+			save_file(output_filename_module_stream_smem[i], pinned_filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f %\n\n", speedup());
+		printf("Speedup: %f\n\n", speedup());
 
 		cudaFree(d_image);
 		cudaFree(d_filtered_image);
@@ -1244,7 +1256,7 @@ void stream_smem_module_gpu(char * filename, int kernel_size, int kernel_radius,
 	cudaFreeHost(pinned_filtered_image);
 }
 
-void naive_canny_gpu(char * filename, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output)
+void naive_canny_gpu(const char * filename, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output)
 {
 	int sobel_kernel_size = 3;
 	int sobel_kernel_radius = 1;
@@ -1292,9 +1304,9 @@ void naive_canny_gpu(char * filename, float sigma, int kernel_size, int kernel_r
 		end_timer();
 
 		if (output)
-			save_file((char*)output_filename_canny[i], filtered_image, f_width, f_height, 1);
+			save_file(output_filename_canny[i], filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f %\n\n", speedup());
+		printf("Speedup: %f\n\n", speedup());
 
 		CHECK(cudaFree(d_image));
 		CHECK(cudaFree(d_gaussian_image));
@@ -1307,7 +1319,7 @@ void naive_canny_gpu(char * filename, float sigma, int kernel_size, int kernel_r
 	free(filtered_image);
 }
 
-void smem_canny_gpu(char * filename, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output)
+void smem_canny_gpu(const char * filename, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output)
 {
 	int sobel_kernel_size = 3;
 	int sobel_kernel_radius = 1;
@@ -1361,9 +1373,9 @@ void smem_canny_gpu(char * filename, float sigma, int kernel_size, int kernel_ra
 		end_timer();
 
 		if (output)
-			save_file((char*)output_filename_canny_smem[i], filtered_image, f_width, f_height, 1);
+			save_file(output_filename_canny_smem[i], filtered_image, f_width, f_height, 1);
 		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f %\n\n", speedup());
+		printf("Speedup: %f\n\n", speedup());
 
 		CHECK(cudaFree(d_image));
 		CHECK(cudaFree(d_gaussian_image));
@@ -1374,4 +1386,70 @@ void smem_canny_gpu(char * filename, float sigma, int kernel_size, int kernel_ra
 
 	free(image);
 	free(filtered_image);
+}
+
+void stream_canny_gpu(const char * filename, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output)
+{
+	int sobel_kernel_size = 3;
+	int sobel_kernel_radius = 1;
+	size_t gaussian_image_size;
+	int f_width_gaussian, f_height_gaussian;
+	image = load_file_details(filename, &width, &height, &channels, &image_size, &gaussian_image_size, &f_width_gaussian, &f_height_gaussian, kernel_radius);
+
+	f_width = f_width_gaussian - sobel_kernel_radius * 2;
+	f_height = f_height_gaussian - sobel_kernel_radius * 2;
+
+	filtered_image_size = f_width * f_height;
+	size_t orientations_size = sizeof(float) * f_width*f_height;
+
+	int strong_color = 255;
+	int weak_color = 40;
+	float high_threshold = high_threshold_ratio * strong_color;
+	float low_threshold = low_threshold_ratio * high_threshold;
+	//Pinned memory allocation
+	CHECK(cudaHostAlloc(&pinned_image, image_size, 0));
+	CHECK(cudaHostAlloc(&pinned_filtered_image, gaussian_image_size, 0));
+	memcpy(pinned_image, image, image_size);
+	//Stream creation
+	cudaStream_t stream[STREAMS];
+	for (int i = 0; i < STREAMS; i++)
+		CHECK(cudaStreamCreate(&stream[i]));
+	for (int i = 0; i < BLOCK_SIZES; i++)
+	{
+		dim3 block = dim3(block_sizes[i], block_sizes[i]);
+		dim3 grid = dim3((f_width_gaussian + block.x - 1) / block.x, (f_height_gaussian + block.y - 1) / block.y);
+		int offset_input = 0;
+		int offset_output = 0;
+		size_t chunk_size = (image_size / STREAMS) + width * channels;
+		size_t chunk_size_result = gaussian_image_size / STREAMS;
+
+		begin_timer();
+		CHECK(cudaMalloc((void**)&d_image, image_size));
+		CHECK(cudaMalloc((void**)&d_gaussian_image, gaussian_image_size));
+
+		for (int j = 0; j < STREAMS; j++)
+		{
+			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
+			//kernel_convolution_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height/ STREAMS, channels, offset_input, offset_output, kernel_size, kernel_radius, GAUSS_KERNEL_CODE);
+			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
+			offset_input+=(int)((image_size / STREAMS) - width * channels);
+			offset_output+=(int)(gaussian_image_size / STREAMS);
+		}
+
+		for (int j = 0; j < STREAMS; j++)
+			CHECK(cudaStreamSynchronize(stream[j]));
+		end_timer();
+
+		if (output)
+			save_file(output_filename_canny_stream[i], pinned_filtered_image, f_width_gaussian, f_height_gaussian, 1);
+		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+		printf("Speedup: %f\n\n", speedup());
+
+		CHECK(cudaFree(d_image));
+		CHECK(cudaFree(d_gaussian_image));
+	}
+
+	free(image);
+	cudaFreeHost(pinned_image);
+	cudaFreeHost(pinned_filtered_image);
 }

@@ -53,7 +53,7 @@ void convolution_module_cpu(unsigned char* pixel, int channels, float* kernel_h,
 	}
 }
 
-void filter_cpu(char* filename, char* output_filename, float* kernel, int kernel_size, int kernel_radius, bool output)
+void filter_cpu(const char* filename, const char* output_filename, float* kernel, int kernel_size, int kernel_radius, bool output)
 {
 	unsigned char* image;
 	unsigned char* filtered_image;
@@ -92,7 +92,7 @@ void filter_cpu(char* filename, char* output_filename, float* kernel, int kernel
 	free(filtered_image);
 }
 
-void module_cpu(char* filename, char* output_filename, float* kernel_h, float* kernel_v, int kernel_size, int kernel_radius, bool output)
+void module_cpu(const char* filename, const char* output_filename, float* kernel_h, float* kernel_v, int kernel_size, int kernel_radius, bool output)
 {
 	float gh = 0;
 	float gv = 0;
@@ -129,7 +129,7 @@ void module_cpu(char* filename, char* output_filename, float* kernel_h, float* k
 	free(filtered_image);
 }
 
-void canny_cpu(char * filename, char * output_filename, float* kernel_h, float* kernel_v, float* gaussian_kernel, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output)
+void canny_cpu(const char * filename, const char * output_filename, float* kernel_h, float* kernel_v, float* gaussian_kernel, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output)
 {
 	unsigned char* image;
 	unsigned char* gaussian_filtered_image;
