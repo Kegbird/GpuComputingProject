@@ -399,39 +399,36 @@ __global__ void kernel_module_smem(unsigned char* image, unsigned char* filtered
 	(filtered_image + index)[0] = sqrtf(gh*gh + gv * gv);
 }
 
-__global__ void kernel_module_stream(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int offset_input, int offset_output)
+__global__ void kernel_module_stream(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int row_offset, int image_offset, int filtered_image_offset)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width - 2 <= col || height - 1 < row)
+	if (width - 2 <= col || height - 2 <= row + row_offset)
 		return;
 
-	unsigned char* pixel = image + row * width * channels + col * channels + offset_input;
-	int index = offset_output + (row * width + col - 2 * row);
+	unsigned char* pixel = image + row * width * channels + col * channels + image_offset;
+	int index = filtered_image_offset + (row * width + col - 2 * row);
 	(filtered_image + index)[0] = device_module(pixel, channels, width);
 }
 
-__global__ void kernel_module_stream_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side, int offset_input, int offset_output)
+__global__ void kernel_module_stream_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side, int row_offset, int image_offset, int filtered_image_offset)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width - 2 <= col || height < row)
+	if (width -2 <= col || height - 2 <= row + row_offset)
 		return;
 
 	extern __shared__ unsigned char image_tile[];
 
-	unsigned char* pixel = image + row * width * channels + col * channels + offset_input;
+	unsigned char* pixel = image + (row * width * channels + col * channels) + image_offset;
 
 	int tile_index = threadIdx.y*tile_side + threadIdx.x;
 
-	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row, col, 1);
+	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row + row_offset, col, 1);
 
 	__syncthreads();
-
-	if (height - 1 < row)
-		return;
 
 	float gh = 0, gv = 0;
 	for (int i = 0; i < 3; i++)
@@ -444,7 +441,7 @@ __global__ void kernel_module_stream_smem(unsigned char* image, unsigned char* f
 		tile_index += tile_side - 3;
 	}
 
-	int index = offset_output + (row * width + col - 2 * row);
+	int index = filtered_image_offset + (row * width + col - 2 * row);
 	(filtered_image + index)[0] = sqrtf(gh*gh + gv * gv);
 }
 
@@ -1013,9 +1010,9 @@ void stream_smem_robert_convolution_gpu(const char* filename, int kernel_size, i
 		int offset_input = 0;
 		//Since the input potentially has more channels than the output(the output is always in grayscale), we need a different offset.
 		int offset_output = 0;
-		int row_offset = 0;
-		int image_offset = 0;
-		int filtered_image_offset = 0;
+		int row_offset;
+		int image_offset;
+		int filtered_image_offset;
 
 
 		begin_timer();
@@ -1140,7 +1137,7 @@ void stream_module_gpu(const char * filename, int kernel_size, int kernel_radius
 	memcpy(pinned_image, image, image_size);
 
 	//Chunk_size is the chunk of the input image wich is elaborated by the stream
-	size_t chunk_size = (image_size / STREAMS) + width * channels;
+	size_t chunk_size = image_size / STREAMS;
 	//Chunk_size_result is the chunk of data written by kernels in the output
 	size_t chunk_size_result = filtered_image_size / STREAMS;
 
@@ -1161,6 +1158,9 @@ void stream_module_gpu(const char * filename, int kernel_size, int kernel_radius
 		int offset_input = 0;
 		//Since the input potentially has more channels than the output(the output is always in grayscale), we need a different offset.
 		int offset_output = 0;
+		int row_offset;
+		int image_offset;
+		int filtered_image_offset;
 
 		begin_timer();
 
@@ -1168,11 +1168,14 @@ void stream_module_gpu(const char * filename, int kernel_size, int kernel_radius
 		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
 		for (int j = 0; j < STREAMS; j++)
 		{
+			row_offset = j * (height / STREAMS);
+			image_offset = j * width*(height / STREAMS)*channels;
+			filtered_image_offset = j * (width - kernel_radius * 2)*(height / STREAMS);
 			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			kernel_module_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height / STREAMS, channels, offset_input, offset_output);
+			kernel_module_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height, channels, row_offset, image_offset, filtered_image_offset);
 			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (int)((image_size / STREAMS) - width * channels);
-			offset_output += (int)chunk_size_result;
+			offset_input += chunk_size;
+			offset_output += chunk_size_result;
 		}
 
 		for (int j = 0; j < STREAMS; j++)
@@ -1205,7 +1208,7 @@ void stream_smem_module_gpu(const char * filename, int kernel_size, int kernel_r
 	memcpy(pinned_image, image, image_size);
 
 	//Chunk_size is the chunk of the input image wich is elaborated by the stream
-	size_t chunk_size = (image_size / STREAMS) + width * channels;
+	size_t chunk_size = image_size / STREAMS;
 	//Chunk_size_result is the chunk of data written by kernels in the output
 	size_t chunk_size_result = filtered_image_size / STREAMS;
 
@@ -1228,17 +1231,23 @@ void stream_smem_module_gpu(const char * filename, int kernel_size, int kernel_r
 		int offset_input = 0;
 		//Since the input potentially has more channels than the output(the output is always in grayscale), we need a different offset.
 		int offset_output = 0;
+		int row_offset;
+		int image_offset;
+		int filtered_image_offset;
 
 		begin_timer();
 		CHECK(cudaMalloc((void**)&d_image, image_size));
 		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
 		for (int j = 0; j < STREAMS; j++)
 		{
+			row_offset = j * (height / STREAMS);
+			image_offset = j * width*(height / STREAMS)*channels;
+			filtered_image_offset = j * (width - kernel_radius * 2)*(height / STREAMS);
 			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			kernel_module_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_filtered_image, width, height / STREAMS, channels, tile_side, offset_input, offset_output);
+			kernel_module_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_filtered_image, width, height, channels, tile_side, row_offset, image_offset, filtered_image_offset);
 			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (int)((image_size / STREAMS) - width * channels);
-			offset_output += (int)chunk_size_result;
+			offset_input += chunk_size;
+			offset_output += chunk_size_result;
 		}
 
 		for (int j = 0; j < STREAMS; j++)
