@@ -23,7 +23,7 @@ float robert_kernel_3x3_v[3][3] = { {0, 1, 0},{-1, 0, 0}, {0, 0, 0} };
 
 float gaussian_kernel_7x7[7][7];
 
-const char filename[] = "Sample.png";
+const char filename[] = "Prova.png";
 
 const char filename_cpu_conv[] = "CPU_Conv_Robert.png";
 const char filename_cpu_module[] = "CPU_Module.png";
@@ -64,7 +64,7 @@ int main()
 	printf("	CPU Convolution(Robert)	\n");
 	printf("============================\n\n");
 
-	filter_cpu(filename, filename_cpu_conv, &sobel_kernel_3x3_h[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+	//filter_cpu(filename, filename_cpu_conv, &sobel_kernel_3x3_h[0][0], KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 
 	printf("============================\n");
@@ -85,7 +85,6 @@ int main()
 
 	stream_robert_convolution_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
-	return 0;
 
 	printf("============================\n");
 	printf("	GPU Convolution(Robert) - Streams and Smem	\n");
@@ -116,6 +115,7 @@ int main()
 	printf("============================\n\n");
 
 	stream_module_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
+	return 0;
 
 	printf("============================\n");
 	printf("	GPU Module(Sobel) - Streams and Smem	\n");

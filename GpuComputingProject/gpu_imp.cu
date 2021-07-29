@@ -300,21 +300,21 @@ __global__ void kernel_convolution_stream(unsigned char* image, unsigned char* f
 	}
 }
 
-__global__ void kernel_convolution_stream_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side, int offset_input, int offset_output, int kernel_size, int kernel_radius, int kernel_code)
+__global__ void kernel_convolution_stream_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side, int row_offset, int image_offset, int filtered_image_offset, int kernel_size, int kernel_radius, int kernel_code)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width - (kernel_radius) * 2 <= col || height - kernel_radius < row)
+	if (width - (kernel_radius) * 2 <= col || height - (kernel_radius) * 2 <= row + row_offset)
 		return;
 
 	extern __shared__ unsigned char image_tile[];
 
-	unsigned char* pixel = image + row * width * channels + col * channels + offset_input;
+	unsigned char* pixel = image + (row * width * channels + col * channels) + image_offset;
 
 	int tile_index = threadIdx.y*tile_side + threadIdx.x;
 
-	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row, col, kernel_radius);
+	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row+row_offset, col, kernel_radius);
 
 	__syncthreads();
 
@@ -349,8 +349,7 @@ __global__ void kernel_convolution_stream_smem(unsigned char* image, unsigned ch
 	}
 	if (result < 0)
 		result = 0;
-
-	int index = offset_output + (row * width + col - ((kernel_radius) * 2)*row);
+	int index = (row * (width-kernel_radius*2) + col) + filtered_image_offset;
 	(filtered_image + index)[0] = result;
 }
 
@@ -919,7 +918,7 @@ void stream_robert_convolution_gpu(const char* filename, int kernel_size, int ke
 	memcpy(pinned_image, image, image_size);
 
 	//Chunk_size is the chunk of the input image wich is elaborated by the stream
-	size_t chunk_size = (image_size / STREAMS)+width*channels;
+	size_t chunk_size = image_size / STREAMS;
 	//Chunk_size_result is the chunk of data written by kernels in the output
 	size_t chunk_size_result = filtered_image_size / STREAMS;
 
@@ -940,9 +939,9 @@ void stream_robert_convolution_gpu(const char* filename, int kernel_size, int ke
 		int offset_input = 0;
 		//Since the input potentially has more channels than the output(the output is always in grayscale), we need a different offset.
 		int offset_output = 0;
-		int row_offset = 0;
-		int image_offset = 0;
-		int filtered_image_offset = 0;
+		int row_offset;
+		int image_offset;
+		int filtered_image_offset;
 
 		begin_timer();
 
@@ -956,7 +955,7 @@ void stream_robert_convolution_gpu(const char* filename, int kernel_size, int ke
 			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
 			kernel_convolution_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height, channels, row_offset, image_offset, filtered_image_offset, kernel_size, kernel_radius, ROBERT_KERNEL_CODE_H);
 			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (image_size / STREAMS) - width * channels;
+			offset_input += chunk_size;
 			offset_output += chunk_size_result;
 		}
 
@@ -984,14 +983,14 @@ void stream_robert_convolution_gpu(const char* filename, int kernel_size, int ke
 
 void stream_smem_robert_convolution_gpu(const char* filename, int kernel_size, int kernel_radius, bool output)
 {
-	/*image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
+	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	//Pinned memory allocation
 	CHECK(cudaHostAlloc(&pinned_image, image_size, 0));
 	CHECK(cudaHostAlloc(&pinned_filtered_image, filtered_image_size, 0));
 	memcpy(pinned_image, image, image_size);
 
 	//Chunk_size is the chunk of the input image wich is elaborated by the stream
-	size_t chunk_size = (image_size / STREAMS) + width * channels;
+	size_t chunk_size = (image_size / STREAMS);
 	//Chunk_size_result is the chunk of data written by kernels in the output
 	size_t chunk_size_result = filtered_image_size / STREAMS;
 
@@ -1014,6 +1013,10 @@ void stream_smem_robert_convolution_gpu(const char* filename, int kernel_size, i
 		int offset_input = 0;
 		//Since the input potentially has more channels than the output(the output is always in grayscale), we need a different offset.
 		int offset_output = 0;
+		int row_offset = 0;
+		int image_offset = 0;
+		int filtered_image_offset = 0;
+
 
 		begin_timer();
 
@@ -1021,11 +1024,14 @@ void stream_smem_robert_convolution_gpu(const char* filename, int kernel_size, i
 		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
 		for (int j = 0; j < STREAMS; j++)
 		{
+			row_offset = j * (height / STREAMS);
+			image_offset = j * width*(height / STREAMS)*channels;
+			filtered_image_offset = j * (width - kernel_radius * 2)*(height / STREAMS);
 			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			kernel_convolution_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_filtered_image, width, height / STREAMS, channels, tile_side, offset_input, offset_output, kernel_size, kernel_radius, ROBERT_KERNEL_CODE_H);
+			kernel_convolution_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_filtered_image, width, height, channels, tile_side, row_offset, image_offset, filtered_image_offset, kernel_size, kernel_radius, ROBERT_KERNEL_CODE_H);
 			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (int)((image_size / STREAMS) - width * channels);
-			offset_output += (int)chunk_size_result;
+			offset_input += image_size / STREAMS;
+			offset_output += chunk_size_result;
 		}
 
 		for (int j = 0; j < STREAMS; j++)
@@ -1046,7 +1052,7 @@ void stream_smem_robert_convolution_gpu(const char* filename, int kernel_size, i
 
 	free(image);
 	cudaFreeHost(pinned_image);
-	cudaFreeHost(pinned_filtered_image);*/
+	cudaFreeHost(pinned_filtered_image);
 }
 
 void naive_module_gpu(const char * filename, int kernel_size, int kernel_radius, bool output)
