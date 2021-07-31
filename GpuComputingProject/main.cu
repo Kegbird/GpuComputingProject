@@ -60,7 +60,7 @@ int main()
 	calculate_gaussian_kernel(&gaussian_kernel_7x7[0][0], SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS);
 	load_constant_memory_gaussian(&gaussian_kernel_7x7[0][0], GAUSSIAN_KERNEL_SIZE);
 
-	/*printf("============================\n");
+	printf("============================\n");
 	printf("	CPU Convolution(Robert)	\n");
 	printf("============================\n\n");
 
@@ -92,7 +92,7 @@ int main()
 
 	stream_smem_robert_convolution_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
-	printf("============================\n");
+	/*printf("============================\n");
 	printf("	CPU Module(Sobel)\n");
 	printf("============================\n\n");
 
@@ -120,7 +120,7 @@ int main()
 	printf("	GPU Module(Sobel) - Streams and Smem	\n");
 	printf("============================\n\n");
 
-	stream_smem_module_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);*/
+	stream_smem_module_gpu(filename, KERNEL_SIZE, KERNEL_RADIUS, OUTPUT);
 
 	printf("============================\n");
 	printf("	CPU Canny Filter \n");
@@ -144,7 +144,7 @@ int main()
 	printf("	GPU Canny Filter - Stream	\n");
 	printf("============================\n\n");
 
-	stream_canny_gpu(filename, SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS, LOW_THRESHOLD_RATIO, HIGH_THRESHOLD_RATIO, OUTPUT);
+	stream_canny_gpu(filename, SIGMA, GAUSSIAN_KERNEL_SIZE, GAUSSIAN_KERNEL_RADIUS, LOW_THRESHOLD_RATIO, HIGH_THRESHOLD_RATIO, OUTPUT);*/
 
 	return 0;
 }

@@ -161,6 +161,20 @@ __device__ float device_convolution(unsigned char* pixel, int channels, int widt
 	return result;
 }
 
+__device__ float device_convolution_smem(float* kernel, unsigned char* image_tile, int tile_index, int tile_side, int kernel_size, int kernel_radius)
+{
+	float result = 0.0;
+	for (int i = 0; i < kernel_size; i++)
+	{
+		for (int j = 0; j < kernel_size; j++, tile_index++)
+			result += image_tile[tile_index] * kernel[i*kernel_size + j];
+		tile_index += tile_side - kernel_radius * 2 - 1;
+	}
+	if (result < 0)
+		result = 0;
+	return result;
+}
+
 __device__ bool device_strong_neighbour(unsigned char* pixel, int width, int strong_color)
 {
 	if (*(pixel - width - 1) == strong_color || *(pixel - width) == strong_color || *(pixel - width + 1) == strong_color ||
@@ -188,6 +202,28 @@ __device__ float device_module(unsigned char* pixel, int channels, int width)
 	return sqrtf(gh*gh + gv * gv);
 }
 
+__device__ float* pick_kernel(int kernel_code)
+{
+	switch (kernel_code)
+	{
+	case GAUSS_KERNEL_CODE:
+		return &d_gaussian_kernel_7x7[0][0];
+		break;
+	case SOBEL_KERNEL_CODE_H:
+		return &d_sobel_kernel_3x3_h[0][0];
+		break;
+	case SOBEL_KERNEL_CODE_V:
+		return &d_sobel_kernel_3x3_v[0][0];
+		break;
+	case ROBERT_KERNEL_CODE_H:
+		return &d_robert_kernel_3x3_h[0][0];
+		break;
+	default:
+		return &d_robert_kernel_3x3_v[0][0];
+		break;
+	}
+}
+
 __global__ void kernel_convolution(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int kernel_size, int kernel_radius, int kernel_code)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
@@ -199,24 +235,7 @@ __global__ void kernel_convolution(unsigned char* image, unsigned char* filtered
 	int index = row * width + col - ((kernel_radius) * 2)*row;
 	unsigned char* pixel = image + row * width * channels + col * channels;
 
-	switch (kernel_code)
-	{
-	case GAUSS_KERNEL_CODE:
-		*(filtered_image + index) = device_convolution(pixel, channels, width, &d_gaussian_kernel_7x7[0][0], kernel_size, kernel_radius);
-		break;
-	case SOBEL_KERNEL_CODE_H:
-		*(filtered_image + index) = device_convolution(pixel, channels, width, &d_sobel_kernel_3x3_h[0][0], kernel_size, kernel_radius);
-		break;
-	case SOBEL_KERNEL_CODE_V:
-		*(filtered_image + index) = device_convolution(pixel, channels, width, &d_sobel_kernel_3x3_v[0][0], kernel_size, kernel_radius);
-		break;
-	case ROBERT_KERNEL_CODE_H:
-		*(filtered_image + index) = device_convolution(pixel, channels, width, &d_robert_kernel_3x3_h[0][0], kernel_size, kernel_radius);
-		break;
-	default:
-		*(filtered_image + index) = device_convolution(pixel, channels, width, &d_robert_kernel_3x3_v[0][0], kernel_size, kernel_radius);
-		break;
-	}
+	*(filtered_image + index) = device_convolution(pixel, channels, width, pick_kernel(kernel_code), kernel_size, kernel_radius);
 }
 
 __global__ void kernel_convolution_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side, int kernel_size, int kernel_radius, int kernel_code)
@@ -237,71 +256,26 @@ __global__ void kernel_convolution_smem(unsigned char* image, unsigned char* fil
 
 	__syncthreads();
 
-	float result = 0;
-
-	float *kernel;
-
-	switch (kernel_code)
-	{
-	case GAUSS_KERNEL_CODE:
-		kernel = &d_gaussian_kernel_7x7[0][0];
-		break;
-	case SOBEL_KERNEL_CODE_H:
-		kernel = &d_sobel_kernel_3x3_h[0][0];
-		break;
-	case SOBEL_KERNEL_CODE_V:
-		kernel = &d_sobel_kernel_3x3_v[0][0];
-		break;
-	case ROBERT_KERNEL_CODE_H:
-		kernel = &d_robert_kernel_3x3_h[0][0];
-		break;
-	default:
-		kernel = &d_robert_kernel_3x3_v[0][0];
-		break;
-	}
-
-	for (int i = 0; i < kernel_size; i++)
-	{
-		for (int j = 0; j < kernel_size; j++, tile_index++)
-			result += image_tile[tile_index] * kernel[i*kernel_size + j];
-		tile_index += tile_side - kernel_radius * 2 - 1;
-	}
-	if (result < 0)
-		result = 0;
+	float *kernel = pick_kernel(kernel_code);
 
 	int index = row * width + col - ((kernel_radius) * 2)*row;
-	(filtered_image + index)[0] = result;
+
+	(filtered_image + index)[0] = device_convolution_smem(kernel, image_tile, tile_index, tile_side, kernel_size, kernel_radius);
 }
 
 __global__ void kernel_convolution_stream(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int row_offset, int image_offset, int filtered_image_offset, int kernel_size, int kernel_radius, int kernel_code)
 {
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
-	
+
 	if (width - (kernel_radius) * 2 <= col || height - (kernel_radius) * 2 <= row + row_offset)
 		return;
 
 	unsigned char* pixel = image + (row * width * channels + col * channels) + image_offset;
+
 	int index = row * (width - kernel_radius * 2) + col + filtered_image_offset;
 
-	switch (kernel_code)
-	{
-	case GAUSS_KERNEL_CODE:
-		*(filtered_image + index) = device_convolution(pixel, channels, width, &d_gaussian_kernel_7x7[0][0], kernel_size, kernel_radius);
-		break;
-	case SOBEL_KERNEL_CODE_H:
-		*(filtered_image + index) = device_convolution(pixel, channels, width, &d_sobel_kernel_3x3_h[0][0], kernel_size, kernel_radius);
-		break;
-	case SOBEL_KERNEL_CODE_V:
-		*(filtered_image + index) = device_convolution(pixel, channels, width, &d_sobel_kernel_3x3_v[0][0], kernel_size, kernel_radius);
-		break;
-	case ROBERT_KERNEL_CODE_H:
-		*(filtered_image + index) = device_convolution(pixel, channels, width, &d_robert_kernel_3x3_h[0][0], kernel_size, kernel_radius);
-		break;
-	default:
-		*(filtered_image + index) = device_convolution(pixel, channels, width, &d_robert_kernel_3x3_v[0][0], kernel_size, kernel_radius);
-		break;
-	}
+	*(filtered_image + index) = device_convolution(pixel, channels, width, pick_kernel(kernel_code), kernel_size, kernel_radius);
 }
 
 __global__ void kernel_convolution_stream_smem(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int tile_side, int row_offset, int image_offset, int filtered_image_offset, int kernel_size, int kernel_radius, int kernel_code)
@@ -318,43 +292,14 @@ __global__ void kernel_convolution_stream_smem(unsigned char* image, unsigned ch
 
 	int tile_index = threadIdx.y*tile_side + threadIdx.x;
 
-	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row+row_offset, col, kernel_radius);
+	fill_shared_memory_tile(pixel, image_tile, width, height, channels, tile_side, tile_index, row + row_offset, col, kernel_radius);
 
 	__syncthreads();
 
-	float result = 0;
+	float *kernel = pick_kernel(kernel_code);
 
-	float *kernel;
-
-	switch (kernel_code)
-	{
-	case GAUSS_KERNEL_CODE:
-		kernel = &d_gaussian_kernel_7x7[0][0];
-		break;
-	case SOBEL_KERNEL_CODE_H:
-		kernel = &d_sobel_kernel_3x3_h[0][0];
-		break;
-	case SOBEL_KERNEL_CODE_V:
-		kernel = &d_sobel_kernel_3x3_v[0][0];
-		break;
-	case ROBERT_KERNEL_CODE_H:
-		kernel = &d_robert_kernel_3x3_h[0][0];
-		break;
-	default:
-		kernel = &d_robert_kernel_3x3_v[0][0];
-		break;
-	}
-
-	for (int i = 0; i < kernel_size; i++)
-	{
-		for (int j = 0; j < kernel_size; j++, tile_index++)
-			result += image_tile[tile_index] * kernel[i*kernel_size + j];
-		tile_index += tile_side - kernel_radius * 2 - 1;
-	}
-	if (result < 0)
-		result = 0;
-	int index = (row * (width-kernel_radius*2) + col) + filtered_image_offset;
-	(filtered_image + index)[0] = result;
+	int index = (row * (width - kernel_radius * 2) + col) + filtered_image_offset;
+	(filtered_image + index)[0] = device_convolution_smem(kernel, image_tile, tile_index, tile_side, kernel_size, kernel_radius);
 }
 
 __global__ void kernel_module(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels)
@@ -365,7 +310,7 @@ __global__ void kernel_module(unsigned char* image, unsigned char* filtered_imag
 	if (width - 2 <= col || height - 2 <= row)
 		return;
 
-	int index = row * width + col - 2*row;
+	int index = row * width + col - 2 * row;
 	unsigned char* pixel = image + row * width * channels + col * channels;
 	(filtered_image + index)[0] = device_module(pixel, channels, width);
 }
@@ -421,7 +366,7 @@ __global__ void kernel_module_stream_smem(unsigned char* image, unsigned char* f
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width -2 <= col || height - 2 <= row + row_offset)
+	if (width - 2 <= col || height - 2 <= row + row_offset)
 		return;
 
 	extern __shared__ unsigned char image_tile[];
@@ -472,7 +417,7 @@ __global__ void kernel_module_orientation(unsigned char* gaussian_filtered_image
 		pixel += (width * channels) - channels * 2 - channels;
 	}
 
-	int index = row * width + col - 2*row;
+	int index = row * width + col - 2 * row;
 	(module_image + index)[0] = sqrtf(gh*gh + gv * gv);
 	orientations[index] = atan2(gv, gh);
 }
@@ -532,7 +477,7 @@ __global__ void kernel_module_orientation_smem(unsigned char* gaussian_filtered_
 		tile_index += tile_side - 3;
 	}
 
-	int index = row * width + col - 2*row;
+	int index = row * width + col - 2 * row;
 	(module_image + index)[0] = sqrtf(gh*gh + gv * gv);
 	orientations[index] = atan2(gv, gh);
 }
@@ -751,12 +696,12 @@ __global__ void kernel_non_max_suppression_stream(unsigned char* module_image, u
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width <= col || height <= row+row_offset)
+	if (width <= col || height <= row + row_offset)
 		return;
 
-	int index = row* width + col + image_offset;
+	int index = row * width + col + image_offset;
 
-	if (row+row_offset == 0 || col == 0 || row+ row_offset == height - 1 || col == width - 1)
+	if (row + row_offset == 0 || col == 0 || row + row_offset == height - 1 || col == width - 1)
 	{
 		non_max_image[index] = module_image[index];
 	}
@@ -921,12 +866,12 @@ __global__ void kernel_hysteresis_stream(unsigned char* non_max_image, unsigned 
 	int row = threadIdx.y + blockIdx.y*blockDim.y;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width <= col || height <= row+row_offset)
+	if (width <= col || height <= row + row_offset)
 		return;
 
 	int index = row * width + col + image_offset;
 
-	if (row+row_offset == 0 || col == 0 || row+row_offset == height - 1 || col == width - 1)
+	if (row + row_offset == 0 || col == 0 || row + row_offset == height - 1 || col == width - 1)
 	{
 		filtered_image[index] = 0;
 	}
@@ -1514,7 +1459,7 @@ void stream_canny_gpu(const char * filename, float sigma, int kernel_size, int k
 	int sobel_kernel_size = 3;
 	int sobel_kernel_radius = 1;
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &gaussian_image_size, &f_width_gaussian, &f_height_gaussian, kernel_radius);
-	
+
 	f_width = f_width_gaussian - sobel_kernel_radius * 2;
 	f_height = f_height_gaussian - sobel_kernel_radius * 2;
 
@@ -1575,7 +1520,7 @@ void stream_canny_gpu(const char * filename, float sigma, int kernel_size, int k
 			row_offset = j * (f_height_gaussian / STREAMS);
 			image_offset = j * f_width_gaussian*(f_height_gaussian / STREAMS);
 			filtered_image_offset = j * f_width*(f_height_gaussian / STREAMS);
-			kernel_module_orientation_stream<< <grid, block, 0, stream[j] >> > (d_gaussian_image, d_module_image, d_orientations, f_width_gaussian, f_height_gaussian, 1, row_offset, image_offset, filtered_image_offset);
+			kernel_module_orientation_stream << <grid, block, 0, stream[j] >> > (d_gaussian_image, d_module_image, d_orientations, f_width_gaussian, f_height_gaussian, 1, row_offset, image_offset, filtered_image_offset);
 			//Non max suppression
 			row_offset = j * (f_height / STREAMS);
 			image_offset = j * f_width*(f_height / STREAMS);
