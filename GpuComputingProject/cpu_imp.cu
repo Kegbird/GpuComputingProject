@@ -13,47 +13,47 @@ bool strong_neighbour(unsigned char * pixel, int strong_value, int width)
 	return false;
 }
 
-float convolution_cpu(unsigned char* pixel, int channels, float* kernel, int width, int height, int kernel_size)
+float convolution_cpu(unsigned char* pixel, int channels, float* kernel, int width, int height, int kernel_side)
 {
 	float result = 0;
 	float color = 0;
-	for (int j = 0; j < kernel_size; j++)
+	for (int j = 0; j < kernel_side; j++)
 	{
-		for (int k = 0; k < kernel_size; k++)
+		for (int k = 0; k < kernel_side; k++)
 		{
 			for (int i = 0; i < channels; i++)
 				color += pixel[i] / channels;
-			result += color * kernel[j*kernel_size + k];
+			result += color * kernel[j*kernel_side + k];
 			pixel += channels;
 			color = 0.0;
 		}
-		pixel += (width * channels) - channels * (kernel_size - 1) - channels;
+		pixel += (width * channels) - channels * (kernel_side - 1) - channels;
 	}
 
 	return result;
 }
 
-void convolution_module_cpu(unsigned char* pixel, int channels, float* kernel_h, float* kernel_v, int width, int height, int kernel_size, float* gh, float* gv)
+void convolution_module_cpu(unsigned char* pixel, int channels, float* kernel_h, float* kernel_v, int width, int height, int kernel_side, float* gh, float* gv)
 {
 	int color = 0;
 	*gh = 0;
 	*gv = 0;
-	for (int j = 0; j < kernel_size; j++)
+	for (int j = 0; j < kernel_side; j++)
 	{
-		for (int k = 0; k < kernel_size; k++)
+		for (int k = 0; k < kernel_side; k++)
 		{
 			for (int i = 0; i < channels; i++)
 				color += pixel[i] / channels;
-			*gh += color * kernel_h[j*kernel_size + k];
-			*gv += color * kernel_v[j*kernel_size + k];
+			*gh += color * kernel_h[j*kernel_side + k];
+			*gv += color * kernel_v[j*kernel_side + k];
 			pixel += channels;
 			color = 0;
 		}
-		pixel += (width * channels) - channels * (kernel_size - 1) - channels;
+		pixel += (width * channels) - channels * (kernel_side - 1) - channels;
 	}
 }
 
-void filter_cpu(const char* filename, const char* output_filename, float* kernel, int kernel_size, int kernel_radius, bool output)
+void filter_cpu(const char* filename, const char* output_filename, float* kernel, int kernel_side, int kernel_radius, bool output)
 {
 	unsigned char* image;
 	unsigned char* filtered_image;
@@ -74,7 +74,7 @@ void filter_cpu(const char* filename, const char* output_filename, float* kernel
 	{
 		for (int j = 0; j < width - kernel_radius * 2; j++, pixel += channels)
 		{
-			value = convolution_cpu(pixel, channels, kernel, width, height, kernel_size);
+			value = convolution_cpu(pixel, channels, kernel, width, height, kernel_side);
 			if (value < 0)
 				res[0] = 0;
 			else
@@ -92,7 +92,7 @@ void filter_cpu(const char* filename, const char* output_filename, float* kernel
 	free(filtered_image);
 }
 
-void module_cpu(const char* filename, const char* output_filename, float* kernel_h, float* kernel_v, int kernel_size, int kernel_radius, bool output)
+void module_cpu(const char* filename, const char* output_filename, float* kernel_h, float* kernel_v, int kernel_side, int kernel_radius, bool output)
 {
 	float gh = 0;
 	float gv = 0;
@@ -114,7 +114,7 @@ void module_cpu(const char* filename, const char* output_filename, float* kernel
 	{
 		for (int j = 0; j < width - kernel_radius * 2; j++, pixel += channels)
 		{
-			convolution_module_cpu(pixel, channels, kernel_h, kernel_v, width, height, kernel_size, &gh, &gv);
+			convolution_module_cpu(pixel, channels, kernel_h, kernel_v, width, height, kernel_side, &gh, &gv);
 			res[0] = (unsigned char)sqrt(gh*gh + gv * gv);
 			res += 1;
 		}
@@ -129,7 +129,7 @@ void module_cpu(const char* filename, const char* output_filename, float* kernel
 	free(filtered_image);
 }
 
-void canny_cpu(const char * filename, const char * output_filename, float* kernel_h, float* kernel_v, float* gaussian_kernel, float sigma, int kernel_size, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output)
+void canny_cpu(const char * filename, const char * output_filename, float* kernel_h, float* kernel_v, float* gaussian_kernel, float sigma, int kernel_side, int kernel_radius, float low_threshold_ratio, float high_threshold_ratio, bool output)
 {
 	unsigned char* image;
 	unsigned char* gaussian_filtered_image;
@@ -137,7 +137,7 @@ void canny_cpu(const char * filename, const char * output_filename, float* kerne
 	int f_width, f_height;
 	int f_width_gaussian, f_height_gaussian;
 	int channels;
-	int sobel_kernel_size = 3;
+	int sobel_kernel_side = 3;
 	int sobel_kernel_radius = 1;
 	size_t image_size, filtered_image_size, gaussian_image_size;
 	begin_timer();
@@ -156,7 +156,7 @@ void canny_cpu(const char * filename, const char * output_filename, float* kerne
 		float value = 0;
 		for (int j = 0; j < f_width_gaussian; j++, pixel += channels)
 		{
-			value = convolution_cpu(pixel, channels, gaussian_kernel, width, height, kernel_size);
+			value = convolution_cpu(pixel, channels, gaussian_kernel, width, height, kernel_side);
 			if (value < 0)
 				*(gaussian_filtered_image+i* f_width_gaussian +j) = 0;
 			else
@@ -173,7 +173,7 @@ void canny_cpu(const char * filename, const char * output_filename, float* kerne
 	{
 		for (int j = 0; j < f_width; j++, pixel++)
 		{
-			convolution_module_cpu(pixel, 1, &kernel_h[0], &kernel_v[0], f_width + sobel_kernel_radius * 2, f_height + sobel_kernel_radius * 2, sobel_kernel_size, &gh, &gv);
+			convolution_module_cpu(pixel, 1, &kernel_h[0], &kernel_v[0], f_width + sobel_kernel_radius * 2, f_height + sobel_kernel_radius * 2, sobel_kernel_side, &gh, &gv);
 			module_image[i*f_width + j] = (unsigned char)sqrt(gh*gh + gv * gv);
 			orientations[i*f_width + j] = atan2(gv, gh);
 		}
@@ -185,8 +185,8 @@ void canny_cpu(const char * filename, const char * output_filename, float* kerne
 
 	int strong_color = 255;
 	int weak_color = 40;
-	int high_threshold = high_threshold_ratio * strong_color;
-	int low_threshold = low_threshold_ratio * high_threshold;
+	float high_threshold = high_threshold_ratio * strong_color;
+	float low_threshold = low_threshold_ratio * high_threshold;
 
 	//Non maxima suppression
 	for (int i = 0; i < f_height; i++)

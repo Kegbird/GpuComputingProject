@@ -21,6 +21,6 @@ float time_elapsed();
 void set_cpu_time(float time);
 float speedup();
 void save_file(const char* filename, unsigned char* image, int width, int height, int channels);
-void calculate_gaussian_kernel(float* kernel, float sigma, int kernel_size, int kernel_radius);
+void calculate_gaussian_kernel(float* kernel, float sigma, int kernel_side, int kernel_radius);
 
 #endif

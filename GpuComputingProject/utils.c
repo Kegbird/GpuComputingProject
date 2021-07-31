@@ -89,7 +89,7 @@ void save_file(const char* filename, unsigned char* image, int width, int height
 	stbi_write_png(filename, width, height, 1, image, width*channels);
 }
 
-void calculate_gaussian_kernel(float* kernel, float sigma, int kernel_size, int kernel_radius)
+void calculate_gaussian_kernel(float* kernel, float sigma, int kernel_side, int kernel_radius)
 {
 	float sum = 0;
 	float r, s = 2.0 * sigma * sigma;
@@ -98,14 +98,14 @@ void calculate_gaussian_kernel(float* kernel, float sigma, int kernel_size, int 
 		for (int j = -kernel_radius; j <= kernel_radius; j++)
 		{
 			r = (float)sqrt(i*i + j * j);
-			kernel[(i + kernel_radius)*kernel_size + j + kernel_radius] = (exp(-(r*r) / s)) / (M_PI*s);
-			sum += kernel[(i + kernel_radius)*kernel_size + j + kernel_radius];
+			kernel[(i + kernel_radius)*kernel_side + j + kernel_radius] = (exp(-(r*r) / s)) / (M_PI*s);
+			sum += kernel[(i + kernel_radius)*kernel_side + j + kernel_radius];
 		}
 	}
 
-	for (int i = 0; i < kernel_size; i++)
+	for (int i = 0; i < kernel_side; i++)
 	{
-		for (int j = 0; j < kernel_size; j++)
-			kernel[i*kernel_size + j] /= sum;
+		for (int j = 0; j < kernel_side; j++)
+			kernel[i*kernel_side + j] /= sum;
 	}
 }
