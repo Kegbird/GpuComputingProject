@@ -47,9 +47,7 @@ void print_file_details(const char* filename)
 	unsigned char* image;
 	int width, height, channels;
 	image = stbi_load(filename, &width, &height, &channels, 0);
-	printf("============================\n");
-	printf("	Input Details	\n");
-	printf("============================\n\n");
+	printf("- Input Details -\n\n");
 	printf("Width: %d\n", width);
 	printf("Height: %d\n", height);
 	printf("Channels: %d\n", channels);

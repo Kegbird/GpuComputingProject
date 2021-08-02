@@ -5,7 +5,6 @@
 
 bool strong_neighbour(unsigned char * pixel, int strong_value, int width)
 {
-	//Inside the image
 	if (*(pixel - width - 1) == strong_value || *(pixel - width) == strong_value || *(pixel - width + 1) == strong_value
 		|| *(pixel - 1) == strong_value || *(pixel + 1) == strong_value ||
 		*(pixel + width - 1) == strong_value || *(pixel + width) == strong_value || *(pixel + width + 1) == strong_value)
@@ -64,6 +63,7 @@ void filter_cpu(const char* filename, const char* output_filename, float* kernel
 	int channels;
 	size_t image_size;
 	size_t filtered_image_size;
+	printf("Begin execution...\n");
 	begin_timer();
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
@@ -85,9 +85,14 @@ void filter_cpu(const char* filename, const char* output_filename, float* kernel
 	}
 	end_timer();
 	set_cpu_time(time_elapsed());
+	printf("Execution ended.\n");
 	printf("Time elapsed:%f seconds\n\n", time_elapsed());
 	if (output)
+	{
+		printf("Saving saving the result...\n");
+		printf("Result saved as %s.\n\n", output_filename);
 		save_file(output_filename, filtered_image, f_width, f_height, 1);
+	}
 	free(image);
 	free(filtered_image);
 }
@@ -105,6 +110,7 @@ void module_cpu(const char* filename, const char* output_filename, float* kernel
 	int channels;
 	size_t image_size;
 	size_t filtered_image_size;
+	printf("Begin execution...\n");
 	begin_timer();
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
@@ -122,9 +128,14 @@ void module_cpu(const char* filename, const char* output_filename, float* kernel
 	}
 	end_timer();
 	set_cpu_time(time_elapsed());
+	printf("Execution ended.\n");
 	printf("Time elapsed:%f seconds\n\n", time_elapsed());
 	if (output)
+	{
+		printf("Saving saving the result...\n");
+		printf("Result saved as %s.\n\n", output_filename);
 		save_file(output_filename, filtered_image, f_width, f_height, 1);
+	}
 	free(image);
 	free(filtered_image);
 }
@@ -140,6 +151,7 @@ void canny_cpu(const char * filename, const char * output_filename, float* kerne
 	int sobel_kernel_side = 3;
 	int sobel_kernel_radius = 1;
 	size_t image_size, filtered_image_size, gaussian_image_size;
+	printf("Begin execution...\n");
 	begin_timer();
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &gaussian_image_size, &f_width_gaussian, &f_height_gaussian, kernel_radius);
 	gaussian_filtered_image = (unsigned char*)malloc(gaussian_image_size);
@@ -253,11 +265,14 @@ void canny_cpu(const char * filename, const char * output_filename, float* kerne
 	}
 	end_timer();
 	set_cpu_time(time_elapsed());
+	printf("Execution ended.\n");
 	printf("Time elapsed:%f seconds\n\n", time_elapsed());
-
 	if (output)
+	{
+		printf("Saving saving the result...\n");
+		printf("Result saved as %s.\n\n", output_filename);
 		save_file(output_filename, module_image, f_width, f_height, 1);
-
+	}
 	free(image);
 	free(gaussian_filtered_image);
 	free(module_image);
