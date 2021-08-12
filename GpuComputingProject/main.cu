@@ -23,28 +23,20 @@ float robert_kernel_3x3_v[3][3] = { {0, 1, 0},{-1, 0, 0}, {0, 0, 0} };
 
 float gaussian_kernel_7x7[7][7];
 
-const char filename[] = "Sample.png";
-
 const char filename_cpu_conv[] = "CPU_Conv_Robert.png";
 const char filename_cpu_module[] = "CPU_Module.png";
 const char filename_cpu_canny[] = "CPU_Canny.png";
 
-void print_device_props()
+int main(int argc, char *argv[])
 {
-	printf("- Device Info -\n\n");
-	cudaDeviceProp prop;
-	cudaGetDeviceProperties(&prop, 0);
-	printf("Device name: %s\n", prop.name);
-	printf("Memory Clock Rate (KHz): %d\n",
-		prop.memoryClockRate);
-	printf("Memory Bus Width (bits): %d\n",
-		prop.memoryBusWidth);
-	printf("Peak Memory Bandwidth (GB/s): %f\n\n",
-		2.0*prop.memoryClockRate*(prop.memoryBusWidth / 8) / 1.0e6);
-}
+	if (argc < 2)
+	{
+		printf("You have to provide an image!\n\n");
+		return 0;
+	}
 
-int main()
-{
+	char* filename = argv[1];
+
 	print_device_props();
 
 	if (!check_input(filename))
@@ -117,7 +109,7 @@ int main()
 	printf("- GPU Canny (stream and smem) -\n\n");
 
 	stream_smem_canny_gpu(filename, SIGMA, GAUSSIAN_KERNEL_SIDE, GAUSSIAN_KERNEL_RADIUS, LOW_THRESHOLD_RATIO, HIGH_THRESHOLD_RATIO, OUTPUT);
-
+	
 	return 0;
 }
 

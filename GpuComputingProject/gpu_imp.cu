@@ -5,14 +5,14 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-#define STREAMS 8
-#define BLOCK_SIZES 2
+#define STREAMS 4
 
 #define GAUSS_KERNEL_CODE 0
 #define SOBEL_KERNEL_CODE_H 1
 #define SOBEL_KERNEL_CODE_V 2
 #define ROBERT_KERNEL_CODE_H 3
 #define ROBERT_KERNEL_CODE_V 3
+#define BLOCK_SIDE 8
 
 __constant__ float d_robert_kernel_3x3_h[3][3];
 __constant__ float d_robert_kernel_3x3_v[3][3];
@@ -21,8 +21,6 @@ __constant__ float d_sobel_kernel_3x3_h[3][3];
 __constant__ float d_sobel_kernel_3x3_v[3][3];
 
 __constant__ float d_gaussian_kernel_7x7[7][7];
-
-const int block_sizes[BLOCK_SIZES] = { 16, 32 };
 
 unsigned char* image;
 unsigned char* filtered_image;
@@ -47,41 +45,29 @@ size_t filtered_image_size;
 size_t gaussian_image_size;
 size_t orientations_size;
 
-const char* output_filename_robert[] = { "Conv_Robert_Naive_16x16.png",
-									"Conv_Robert_Naive_32x32.png" };
+const char output_filename_robert[] = "Conv_Robert_Naive.png";
 
-const char* output_filename_robert_smem[] = { "Conv_Robert_Smem_16x16.png",
-									"Conv_Robert_Smem_32x32.png" };
+const char output_filename_robert_smem[] = "Conv_Robert_Smem.png";
 
-const char* output_filename_robert_stream[] = { "Conv_Robert_Stream_16x16.png",
-									"Conv_Robert_Stream_32x32.png" };
+const char output_filename_robert_stream[] = "Conv_Robert_Stream.png";
 
-const char* output_filename_robert_stream_smem[] = { "Conv_Robert_Smem_Stream_16x16.png",
-									"Conv_Robert_Smem_Stream_32x32.png" };
+const char output_filename_robert_stream_smem[] = "Conv_Robert_Smem_Stream.png";
 
-const char* output_filename_module[] = { "Module_Naive_16x16.png",
-									"Module_Naive_32x32.png" };
+const char output_filename_module[] = "Module_Naive.png";
 
-const char* output_filename_module_smem[] = { "Module_Smem_16x16.png",
-									"Module_Smem_32x32.png" };
+const char output_filename_module_smem[] = "Module_Smem.png";
 
-const char* output_filename_module_stream[] = { "Module_Stream_16x16.png",
-									"Module_Stream_32x32.png" };
+const char output_filename_module_stream[] = "Module_Stream.png";
 
-const char* output_filename_module_stream_smem[] = { "Module_Stream_Smem_16x16.png",
-									"Module_Stream_Smem_32x32.png" };
+const char output_filename_module_stream_smem[] = "Module_Stream_Smem.png";
 
-const char* output_filename_canny[] = { "Canny_Naive_16x16.png",
-										"Canny_Naive_32x32.png" };
+const char output_filename_canny[] ="Canny_Naive.png";
 
-const char* output_filename_canny_smem[] = { "Canny_Smem_16x16.png",
-										"Canny_Smem_32x32.png" };
+const char output_filename_canny_smem[] = "Canny_Smem.png";
 
-const char* output_filename_canny_stream[] = { "Canny_Stream_16x16.png",
-										"Canny_Stream_32x32.png" };
+const char output_filename_canny_stream[] = "Canny_Stream.png";
 
-const char* output_filename_canny_stream_smem[] = { "Canny_Stream_Smem_16x16.png",
-													"Canny_Stream_Smem_32x32.png" };
+const char output_filename_canny_stream_smem[] = "Canny_Stream_Smem.png";											
 
 void load_constant_memory_robert_h(float* kernel, int kernel_side)
 {
@@ -262,8 +248,9 @@ __device__ float device_module(unsigned char* pixel, int channels, int width)
 		//Evaluating gh and gv
 		for (int j = 0; j < kernel_side; j++, pixel += channels)
 		{
-			gh += device_grayscale(pixel, channels) * d_sobel_kernel_3x3_h[i][j];
-			gv += device_grayscale(pixel, channels) * d_sobel_kernel_3x3_v[i][j];
+			float gray = device_grayscale(pixel, channels);
+			gh += gray * d_sobel_kernel_3x3_h[i][j];
+			gv += gray * d_sobel_kernel_3x3_v[i][j];
 		}
 		pixel += (width * channels) - channels * (kernel_side - 1) - channels;
 	}
@@ -539,14 +526,14 @@ __global__ void kernel_module_smem(unsigned char* image, unsigned char* filtered
 
 __global__ void kernel_module_stream(unsigned char* image, unsigned char* filtered_image, int width, int height, int channels, int row_offset)
 {
-	int row = threadIdx.y + blockIdx.y*blockDim.y +row_offset;
+	int row = threadIdx.y + blockIdx.y*blockDim.y + row_offset;
 	int col = threadIdx.x + blockIdx.x*blockDim.x;
 
-	if (width - 2 <= col || height - 2 <= row)
+	if (width - 2 <= col || height-2 <= row)
 		return;
 
 	unsigned char* pixel = image + row * width * channels + col * channels;
-	int index =  row * width + col - 2 * row;
+	int index = row * width + col - 2 * row;
 	(filtered_image + index)[0] = device_module(pixel, channels, width);
 }
 
@@ -645,7 +632,7 @@ __global__ void kernel_module_orientation_stream_smem(unsigned char* gaussian_fi
 	__syncthreads();
 
 	float gh, gv;
-	int index =  row * width + col - 2 * row;
+	int index = row * width + col - 2 * row;
 	(module_image + index)[0] = device_module_smem(image_tile, tile_index, tile_side, &gh, &gv);
 	orientations[index] = atan2(gv, gh);
 }
@@ -874,31 +861,29 @@ void naive_robert_convolution_gpu(const char* filename, int kernel_side, int ker
 	//Allocation of the memory on which the filtered image will be saved.
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
 	//The execution of the kernel is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
-	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		dim3 grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
-		printf("Begin execution(block %dx%d)...\n", block.x, block.y);
-		begin_timer();
-		//Allocation of device memory for the image and the filtered image, followed by a memory copy.
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
-		CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
-		//Kernel execution.
-		kernel_convolution << <grid, block >> > (d_image, d_filtered_image, width, height, channels, kernel_side, kernel_radius, ROBERT_KERNEL_CODE_H);
-		CHECK(cudaDeviceSynchronize());
-		//Storing the result from device memory to host memory.
-		CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
-		end_timer();
-		printf("Execution ended.\n\n");
-		//Saving result as png image.
-		save_result(output, filtered_image, output_filename_robert[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		cudaFree(d_image);
-		cudaFree(d_filtered_image);
-	}
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	dim3 grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
+	printf("Begin execution(block %dx%d)...\n", block.x, block.y);
+	begin_timer();
+	//Allocation of device memory for the image and the filtered image, followed by a memory copy.
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
+	CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
+	//Kernel execution.
+	kernel_convolution << <grid, block >> > (d_image, d_filtered_image, width, height, channels, kernel_side, kernel_radius, ROBERT_KERNEL_CODE_H);
+	CHECK(cudaDeviceSynchronize());
+	//Storing the result from device memory to host memory.
+	CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
+	end_timer();
+	printf("Execution ended.\n\n");
+	//Saving result as png image.
+	save_result(output, filtered_image, output_filename_robert, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	cudaFree(d_image);
+	cudaFree(d_filtered_image);
+
 	//Deallocation of host memory.
 	free(image);
 	free(filtered_image);
@@ -910,47 +895,43 @@ void smem_robert_convolution_gpu(const char* filename, int kernel_side, int kern
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	//Allocation of the memory on which the filtered image will be saved.
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
-	//The execution of the kernel is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
-	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		dim3 grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
-		/*The image is loaded in shared memory tiles, allocated with each block.
-		//The memory tile requires extra rows and columns; the number of extra rows and columns depend by the kernel radius (this is tile_side = block_size + kernel_radius*2)
-		____________________
-		|                 | |extra
-		|                 | |column
-		|                 | |
-		|                 | |
-		|                 | |
-		|                 | |
-		|_________________| |
-		|______extra row____|
-		*/
-		//By loading each pixel into the shared memory, convolutions can be executed faster(reading from shared memory is faster than from global memory).
-		int tile_side = block_sizes[i] + kernel_radius * 2;
-		size_t tile_size = tile_side * tile_side;
-		printf("Begin execution(block %dx%d)...\n", block.x, block.y);
-		begin_timer();
-		//Allocation of device memory for the image and the filtered image, followed by a memory copy.
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
-		CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
-		//Kernel execution.
-		kernel_convolution_smem << < grid, block, tile_size >> > (d_image, d_filtered_image, width, height, channels, tile_side, kernel_side, kernel_radius, ROBERT_KERNEL_CODE_H);
-		CHECK(cudaDeviceSynchronize());
-		//Storing the result from device memory to host memory.
-		CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
-		end_timer();
-		printf("Execution ended.\n\n");
-		//Saving result as png image.
-		save_result(output, filtered_image, output_filename_robert_smem[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		cudaFree(d_image);
-		cudaFree(d_filtered_image);
-	}
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	dim3 grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
+	/*The image is loaded in shared memory tiles, allocated with each block.
+	//The memory tile requires extra rows and columns; the number of extra rows and columns depend by the kernel radius (this is tile_side = block_size + kernel_radius*2)
+	____________________
+	|                 | |extra
+	|                 | |column
+	|                 | |
+	|                 | |
+	|                 | |
+	|                 | |
+	|_________________| |
+	|______extra row____|
+	*/
+	//By loading each pixel into the shared memory, convolutions can be executed faster(reading from shared memory is faster than from global memory).
+	int tile_side = BLOCK_SIDE + kernel_radius * 2;
+	size_t tile_size = tile_side * tile_side;
+	printf("Begin execution(block %dx%d)...\n", block.x, block.y);
+	begin_timer();
+	//Allocation of device memory for the image and the filtered image, followed by a memory copy.
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
+	CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
+	//Kernel execution.
+	kernel_convolution_smem << < grid, block, tile_size >> > (d_image, d_filtered_image, width, height, channels, tile_side, kernel_side, kernel_radius, ROBERT_KERNEL_CODE_H);
+	CHECK(cudaDeviceSynchronize());
+	//Storing the result from device memory to host memory.
+	CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
+	end_timer();
+	printf("Execution ended.\n\n");
+	//Saving result as png image.
+	save_result(output, filtered_image, output_filename_robert_smem, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	cudaFree(d_image);
+	cudaFree(d_filtered_image);
 	//Deallocation of host memory.
 	free(image);
 	free(filtered_image);
@@ -975,44 +956,40 @@ void stream_robert_convolution_gpu(const char* filename, int kernel_side, int ke
 	cudaStream_t stream[STREAMS];
 	for (int i = 0; i < STREAMS; i++)
 		CHECK(cudaStreamCreate(&stream[i]));
-	//The execution of the kernel is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	dim3 grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
+	int offset_input = 0;
+	int offset_output = 0;
+	int row_offset;
+	printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
+	begin_timer();
+	//Allocation of device memory for the image and the filtered image, followed by a memory copy.
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
+	for (int j = 0; j < STREAMS; j++)
 	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		dim3 grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
-		int offset_input = 0;
-		int offset_output = 0;
-		int row_offset;
-		printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
-		begin_timer();
-		//Allocation of device memory for the image and the filtered image, followed by a memory copy.
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
-		for (int j = 0; j < STREAMS; j++)
-		{
-			row_offset = j * (height / STREAMS);
-			//Asynchronous loading of chunk size bytes of the input image.
-			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			//Kernel execution.
-			kernel_convolution_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height, channels, row_offset, kernel_side, kernel_radius, ROBERT_KERNEL_CODE_H);
-			//Asynchronous loading of chunk size result bytes of the filtered image.
-			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (int)chunk_size;
-			offset_output += (int)chunk_size_result;
-		}
-		//The computations end as soon as all streams end.
-		for (int j = 0; j < STREAMS; j++)
-			CHECK(cudaStreamSynchronize(stream[j]));
-		end_timer();
-		printf("Execution ended.\n\n");
-		//Saving result as png image.
-		save_result(output, pinned_filtered_image, output_filename_robert_stream[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		cudaFree(d_image);
-		cudaFree(d_filtered_image);
+		row_offset = j * (height / STREAMS);
+		//Asynchronous loading of chunk size bytes of the input image.
+		CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
+		//Kernel execution.
+		kernel_convolution_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height, channels, row_offset, kernel_side, kernel_radius, ROBERT_KERNEL_CODE_H);
+		//Asynchronous loading of chunk size result bytes of the filtered image.
+		CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
+		offset_input += (int)chunk_size;
+		offset_output += (int)chunk_size_result;
 	}
+	//The computations end as soon as all streams end.
+	for (int j = 0; j < STREAMS; j++)
+		CHECK(cudaStreamSynchronize(stream[j]));
+	end_timer();
+	printf("Execution ended.\n\n");
+	//Saving result as png image.
+	save_result(output, pinned_filtered_image, output_filename_robert_stream, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	cudaFree(d_image);
+	cudaFree(d_filtered_image);
 	//Deallocation of streams.
 	for (int i = 0; i < STREAMS; i++)
 		cudaStreamDestroy(stream[i]);
@@ -1036,43 +1013,39 @@ void stream_smem_robert_convolution_gpu(const char* filename, int kernel_side, i
 	cudaStream_t stream[STREAMS];
 	for (int i = 0; i < STREAMS; i++)
 		CHECK(cudaStreamCreate(&stream[i]));
-	//The execution of the kernel is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	dim3 grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
+	int tile_side = BLOCK_SIDE + kernel_radius * 2;
+	size_t tile_size = tile_side * tile_side;
+	int offset_input = 0;
+	int offset_output = 0;
+	int row_offset;
+	printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
+	begin_timer();
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
+	for (int j = 0; j < STREAMS; j++)
 	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		dim3 grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
-		int tile_side = block_sizes[i] + kernel_radius * 2;
-		size_t tile_size = tile_side * tile_side;
-		int offset_input = 0;
-		int offset_output = 0;
-		int row_offset;
-		printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
-		begin_timer();
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
-		for (int j = 0; j < STREAMS; j++)
-		{
-			row_offset = j * (height / STREAMS);
-			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			//Kernel execution.
-			kernel_convolution_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_filtered_image, width, height, channels, tile_side, row_offset, kernel_side, kernel_radius, ROBERT_KERNEL_CODE_H);
-			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (int)(image_size) / STREAMS;
-			offset_output += (int)chunk_size_result;
-		}
-		//The computations end as soon as all streams end.
-		for (int j = 0; j < STREAMS; j++)
-			CHECK(cudaStreamSynchronize(stream[j]));
-		end_timer();
-		printf("Execution ended.\n\n");
-		//Saving result as png image.
-		save_result(output, pinned_filtered_image, output_filename_robert_stream_smem[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		cudaFree(d_image);
-		cudaFree(d_filtered_image);
+		row_offset = j * (height / STREAMS);
+		CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
+		//Kernel execution.
+		kernel_convolution_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_filtered_image, width, height, channels, tile_side, row_offset, kernel_side, kernel_radius, ROBERT_KERNEL_CODE_H);
+		CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
+		offset_input += (int)(image_size) / STREAMS;
+		offset_output += (int)chunk_size_result;
 	}
+	//The computations end as soon as all streams end.
+	for (int j = 0; j < STREAMS; j++)
+		CHECK(cudaStreamSynchronize(stream[j]));
+	end_timer();
+	printf("Execution ended.\n\n");
+	//Saving result as png image.
+	save_result(output, pinned_filtered_image, output_filename_robert_stream_smem, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	cudaFree(d_image);
+	cudaFree(d_filtered_image);
 	//Deallocation of streams.
 	for (int i = 0; i < STREAMS; i++)
 		cudaStreamDestroy(stream[i]);
@@ -1087,35 +1060,31 @@ void naive_module_gpu(const char * filename, int kernel_side, int kernel_radius,
 	//Loading of the image.
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
-	//The execution of the kernel is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
-	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		dim3 grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
-		printf("Begin execution(block %dx%d)...\n", block.x, block.y);
-		begin_timer();
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
-		CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
-		//Kernel execution.
-		kernel_module << < grid, block >> > (d_image, d_filtered_image, width, height, channels);
-		CHECK(cudaDeviceSynchronize());
-		CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
-		end_timer();
-		printf("Execution ended.\n");
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	dim3 grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
+	printf("Begin execution(block %dx%d)...\n", block.x, block.y);
+	begin_timer();
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
+	CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
+	//Kernel execution.
+	kernel_module << < grid, block >> > (d_image, d_filtered_image, width, height, channels);
+	CHECK(cudaDeviceSynchronize());
+	CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
+	end_timer();
+	printf("Execution ended.\n");
 
-		if (output)
-		{
-			printf("Saving saving the result...\n");
-			save_file(output_filename_module[i], filtered_image, f_width, f_height, 1);
-			printf("Result saved as %s.\n", output_filename_module[i]);
-		}
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		cudaFree(d_image);
-		cudaFree(d_filtered_image);
+	if (output)
+	{
+		printf("Saving saving the result...\n");
+		save_file(output_filename_module, filtered_image, f_width, f_height, 1);
+		printf("Result saved as %s.\n", output_filename_module);
 	}
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	cudaFree(d_image);
+	cudaFree(d_filtered_image);
 	//Deallocation of host memory.
 	free(image);
 	free(filtered_image);
@@ -1126,32 +1095,28 @@ void smem_module_gpu(const char * filename, int kernel_side, int kernel_radius, 
 	//Loading of the image.
 	image = load_file_details(filename, &width, &height, &channels, &image_size, &filtered_image_size, &f_width, &f_height, kernel_radius);
 	filtered_image = (unsigned char*)malloc(filtered_image_size);
-	//The execution of the kernel is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
-	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		dim3 grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
-		//The image is loaded in shared memory tiles, in the same fashion as it's written in the smem convolution kernel.
-		int tile_side = block_sizes[i] + kernel_radius * 2;
-		size_t tile_size = tile_side * tile_side;
-		printf("Begin execution(block %dx%d)...\n", block.x, block.y);
-		begin_timer();
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
-		CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
-		//Kernel execution.
-		kernel_module_smem << < grid, block, tile_size >> > (d_image, d_filtered_image, width, height, channels, tile_side);
-		CHECK(cudaDeviceSynchronize());
-		CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
-		end_timer();
-		printf("Execution ended.\n\n");
-		save_result(output, filtered_image, output_filename_module_smem[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		cudaFree(d_image);
-		cudaFree(d_filtered_image);
-	}
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	dim3 grid = dim3((f_width + block.x - 1) / block.x, (f_height + block.y - 1) / block.y);
+	//The image is loaded in shared memory tiles, in the same fashion as it's written in the smem convolution kernel.
+	int tile_side = BLOCK_SIDE + kernel_radius * 2;
+	size_t tile_size = tile_side * tile_side;
+	printf("Begin execution(block %dx%d)...\n", block.x, block.y);
+	begin_timer();
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
+	CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
+	//Kernel execution.
+	kernel_module_smem << < grid, block, tile_size >> > (d_image, d_filtered_image, width, height, channels, tile_side);
+	CHECK(cudaDeviceSynchronize());
+	CHECK(cudaMemcpy(filtered_image, d_filtered_image, filtered_image_size, cudaMemcpyDeviceToHost));
+	end_timer();
+	printf("Execution ended.\n\n");
+	save_result(output, filtered_image, output_filename_module_smem, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	cudaFree(d_image);
+	cudaFree(d_filtered_image);
 	//Deallocation of host memory.
 	free(image);
 	free(filtered_image);
@@ -1172,41 +1137,38 @@ void stream_module_gpu(const char * filename, int kernel_side, int kernel_radius
 	cudaStream_t stream[STREAMS];
 	for (int i = 0; i < STREAMS; i++)
 		CHECK(cudaStreamCreate(&stream[i]));
-	//The execution of the kernel is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
+
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	dim3 grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
+	int offset_input = 0;
+	int offset_output = 0;
+	int row_offset;
+	printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
+	begin_timer();
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
+	for (int j = 0; j < STREAMS; j++)
 	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		dim3 grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
-		int offset_input = 0;
-		int offset_output = 0;
-		int row_offset;
-		printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
-		begin_timer();
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
-		for (int j = 0; j < STREAMS; j++)
-		{
-			row_offset = j * (height / STREAMS);
-			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			//Kernel execution.
-			kernel_module_stream <<<grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height, channels, row_offset);
-			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (int)chunk_size;
-			offset_output += (int)chunk_size_result;
-		}
-		//The computations end as soon as all streams end.
-		for (int j = 0; j < STREAMS; j++)
-			CHECK(cudaStreamSynchronize(stream[j]));
-		end_timer();
-		printf("Execution ended.\n\n");
-		//Saving result as png image.
-		save_result(output, pinned_filtered_image, output_filename_module_stream[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		cudaFree(d_image);
-		cudaFree(d_filtered_image);
+		row_offset = j * (height / STREAMS);
+		CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
+		//Kernel execution.
+		kernel_module_stream << <grid, block, 0, stream[j] >> > (d_image, d_filtered_image, width, height, channels, row_offset);
+		CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
+		offset_input += (int)chunk_size;
+		offset_output += (int)chunk_size_result;
 	}
+	//The computations end as soon as all streams end.
+	for (int j = 0; j < STREAMS; j++)
+		CHECK(cudaStreamSynchronize(stream[j]));
+	end_timer();
+	printf("Execution ended.\n\n");
+	//Saving result as png image.
+	save_result(output, pinned_filtered_image, output_filename_module_stream, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	cudaFree(d_image);
+	cudaFree(d_filtered_image);
 	//Stream deallocation.
 	for (int i = 0; i < STREAMS; i++)
 		cudaStreamDestroy(stream[i]);
@@ -1230,43 +1192,39 @@ void stream_smem_module_gpu(const char * filename, int kernel_side, int kernel_r
 	cudaStream_t stream[STREAMS];
 	for (int i = 0; i < STREAMS; i++)
 		CHECK(cudaStreamCreate(&stream[i]));
-	//The execution of the kernel is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	dim3 grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
+	int tile_side = BLOCK_SIDE + kernel_radius * 2;
+	size_t tile_size = tile_side * tile_side;
+	int offset_input = 0;
+	int offset_output = 0;
+	int row_offset;
+	printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
+	begin_timer();
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
+	for (int j = 0; j < STREAMS; j++)
 	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		dim3 grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
-		int tile_side = block_sizes[i] + kernel_radius * 2;
-		size_t tile_size = tile_side * tile_side;
-		int offset_input = 0;
-		int offset_output = 0;
-		int row_offset;
-		printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
-		begin_timer();
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_filtered_image, filtered_image_size));
-		for (int j = 0; j < STREAMS; j++)
-		{
-			row_offset = j * (height / STREAMS);
-			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			//Kernel execution.
-			kernel_module_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_filtered_image, width, height, channels, tile_side, row_offset);
-			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (int)chunk_size;
-			offset_output += (int)chunk_size_result;
-		}
-		//The computations end as soon as all streams end.
-		for (int j = 0; j < STREAMS; j++)
-			CHECK(cudaStreamSynchronize(stream[j]));
-		end_timer();
-		printf("Execution ended.\n\n");
-		//Saving result as png image.
-		save_result(output, pinned_filtered_image, output_filename_module_stream_smem[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		cudaFree(d_image);
-		cudaFree(d_filtered_image);
+		row_offset = j * (height / STREAMS);
+		CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
+		//Kernel execution.
+		kernel_module_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_filtered_image, width, height, channels, tile_side, row_offset);
+		CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_filtered_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
+		offset_input += (int)chunk_size;
+		offset_output += (int)chunk_size_result;
 	}
+	//The computations end as soon as all streams end.
+	for (int j = 0; j < STREAMS; j++)
+		CHECK(cudaStreamSynchronize(stream[j]));
+	end_timer();
+	printf("Execution ended.\n\n");
+	//Saving result as png image.
+	save_result(output, pinned_filtered_image, output_filename_module_stream_smem, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	cudaFree(d_image);
+	cudaFree(d_filtered_image);
 	//Stream deallocation.
 	for (int i = 0; i < STREAMS; i++)
 		cudaStreamDestroy(stream[i]);
@@ -1300,51 +1258,47 @@ void naive_canny_gpu(const char * filename, float sigma, int kernel_side, int ke
 	int weak_color = 40;
 	float high_threshold = high_threshold_ratio * strong_color;
 	float low_threshold = low_threshold_ratio * high_threshold;
-	//The execution of the kernels is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
-	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		dim3 grid = dim3((f_width_gaussian + block.x - 1) / block.x, (f_height_gaussian + block.y - 1) / block.y);
-		printf("Begin execution(block %dx%d)...\n", block.x, block.y);
-		begin_timer();
-		/*
-		-d_image stores the input image.
-		-d_gaussian_image stores the image filtered with the gaussian kernel.
-		-d_module_image stores the module of the gaussian image.
-		-d_non_max_image stores the result of non max suppression.
-		-d_orientations stores the orientations of all gradients.
-		*/
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_gaussian_image, gaussian_image_size));
-		CHECK(cudaMalloc((void**)&d_module_image, filtered_image_size));
-		CHECK(cudaMalloc((void**)&d_non_max_image, filtered_image_size));
-		CHECK(cudaMalloc((void**)&d_orientations, orientations_size));
-		CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
-		// - 1 - Gaussian Filter
-		kernel_convolution << <grid, block >> > (d_image, d_gaussian_image, width, height, channels, kernel_side, kernel_radius, GAUSS_KERNEL_CODE);
-		grid = dim3((f_width_gaussian + block.x - 1) / block.x, (f_width_gaussian + block.y - 1) / block.y);
-		//	- 2 - Sobel Module and Gradient orientations
-		kernel_module_orientation << <grid, block >> > (d_gaussian_image, d_module_image, d_orientations, f_width_gaussian, f_height_gaussian, 1);
-		grid = dim3((f_width + block.x - 3) / block.x, (f_height + block.y - 3) / block.y);
-		// - 3 - Non max suppression 
-		kernel_non_max_suppression << <grid, block >> > (d_module_image, d_non_max_image, d_orientations, f_width, f_height, weak_color, strong_color, low_threshold, high_threshold);
-		// - 4 - Hysteresis
-		kernel_hysteresis << <grid, block >> > (d_non_max_image, d_module_image, f_width, f_height, weak_color, strong_color);
-		CHECK(cudaDeviceSynchronize());
-		CHECK(cudaMemcpy(filtered_image, d_module_image, filtered_image_size, cudaMemcpyDeviceToHost));
-		end_timer();
-		printf("Execution ended.\n\n");
-		//Saving result.
-		save_result(output, filtered_image, output_filename_canny[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		CHECK(cudaFree(d_image));
-		CHECK(cudaFree(d_gaussian_image));
-		CHECK(cudaFree(d_module_image));
-		CHECK(cudaFree(d_non_max_image));
-		CHECK(cudaFree(d_orientations));
-	}
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	dim3 grid = dim3((f_width_gaussian + block.x - 1) / block.x, (f_height_gaussian + block.y - 1) / block.y);
+	printf("Begin execution(block %dx%d)...\n", block.x, block.y);
+	begin_timer();
+	/*
+	-d_image stores the input image.
+	-d_gaussian_image stores the image filtered with the gaussian kernel.
+	-d_module_image stores the module of the gaussian image.
+	-d_non_max_image stores the result of non max suppression.
+	-d_orientations stores the orientations of all gradients.
+	*/
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_gaussian_image, gaussian_image_size));
+	CHECK(cudaMalloc((void**)&d_module_image, filtered_image_size));
+	CHECK(cudaMalloc((void**)&d_non_max_image, filtered_image_size));
+	CHECK(cudaMalloc((void**)&d_orientations, orientations_size));
+	CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
+	// - 1 - Gaussian Filter
+	kernel_convolution << <grid, block >> > (d_image, d_gaussian_image, width, height, channels, kernel_side, kernel_radius, GAUSS_KERNEL_CODE);
+	grid = dim3((f_width_gaussian + block.x - 1) / block.x, (f_width_gaussian + block.y - 1) / block.y);
+	//	- 2 - Sobel Module and Gradient orientations
+	kernel_module_orientation << <grid, block >> > (d_gaussian_image, d_module_image, d_orientations, f_width_gaussian, f_height_gaussian, 1);
+	grid = dim3((f_width + block.x - 3) / block.x, (f_height + block.y - 3) / block.y);
+	// - 3 - Non max suppression 
+	kernel_non_max_suppression << <grid, block >> > (d_module_image, d_non_max_image, d_orientations, f_width, f_height, weak_color, strong_color, low_threshold, high_threshold);
+	// - 4 - Hysteresis
+	kernel_hysteresis << <grid, block >> > (d_non_max_image, d_module_image, f_width, f_height, weak_color, strong_color);
+	CHECK(cudaDeviceSynchronize());
+	CHECK(cudaMemcpy(filtered_image, d_module_image, filtered_image_size, cudaMemcpyDeviceToHost));
+	end_timer();
+	printf("Execution ended.\n\n");
+	//Saving result.
+	save_result(output, filtered_image, output_filename_canny, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	CHECK(cudaFree(d_image));
+	CHECK(cudaFree(d_gaussian_image));
+	CHECK(cudaFree(d_module_image));
+	CHECK(cudaFree(d_non_max_image));
+	CHECK(cudaFree(d_orientations));
 	//Deallocation of host memory.
 	free(image);
 	free(filtered_image);
@@ -1365,47 +1319,43 @@ void smem_canny_gpu(const char * filename, float sigma, int kernel_side, int ker
 	float low_threshold = low_threshold_ratio * high_threshold;
 	size_t tile_size;
 	int tile_side;
-	//The execution of the kernels is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
-	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		dim3 grid = dim3((f_width_gaussian + block.x - 1) / block.x, (f_height_gaussian + block.y - 1) / block.y);
-		tile_side = block_sizes[i] + kernel_radius * 2;
-		tile_size = tile_side * tile_side;
-		printf("Begin execution(block %dx%d)...\n", block.x, block.y);
-		begin_timer();
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_gaussian_image, gaussian_image_size));
-		CHECK(cudaMalloc((void**)&d_module_image, filtered_image_size));
-		CHECK(cudaMalloc((void**)&d_non_max_image, filtered_image_size));
-		CHECK(cudaMalloc((void**)&d_orientations, orientations_size));
-		CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
-		// - 1 - Gaussian Filter
-		kernel_convolution_smem << <grid, block, tile_size >> > (d_image, d_gaussian_image, width, height, channels, tile_side, kernel_side, kernel_radius, GAUSS_KERNEL_CODE);
-		grid = dim3((f_width_gaussian + block.x - 1) / block.x, (f_width_gaussian + block.y - 1) / block.y);
-		tile_side = block_sizes[i] + 2;
-		tile_size = tile_side * tile_side;
-		//	- 2 - Sobel Module and Gradient orientations
-		kernel_module_orientation_smem << <grid, block, tile_size >> > (d_gaussian_image, d_module_image, d_orientations, f_width_gaussian, f_height_gaussian, 1, tile_side);
-		// - 3 - Non max suppression 
-		kernel_non_max_suppression_smem << <grid, block, tile_size >> > (d_module_image, d_non_max_image, d_orientations, f_width, f_height, weak_color, strong_color, low_threshold, high_threshold, tile_side);
-		// - 4 - Hysteresis
-		kernel_hysteresis_smem << <grid, block, tile_size >> > (d_non_max_image, d_module_image, f_width, f_height, weak_color, strong_color, tile_side);
-		CHECK(cudaDeviceSynchronize());
-		CHECK(cudaMemcpy(filtered_image, d_module_image, filtered_image_size, cudaMemcpyDeviceToHost));
-		end_timer();
-		printf("Execution ended.\n\n");
-		//Saving result.
-		save_result(output, filtered_image, output_filename_canny_smem[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		CHECK(cudaFree(d_image));
-		CHECK(cudaFree(d_gaussian_image));
-		CHECK(cudaFree(d_module_image));
-		CHECK(cudaFree(d_non_max_image));
-		CHECK(cudaFree(d_orientations));
-	}
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	dim3 grid = dim3((f_width_gaussian + block.x - 1) / block.x, (f_height_gaussian + block.y - 1) / block.y);
+	tile_side = BLOCK_SIDE + kernel_radius * 2;
+	tile_size = tile_side * tile_side;
+	printf("Begin execution(block %dx%d)...\n", block.x, block.y);
+	begin_timer();
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_gaussian_image, gaussian_image_size));
+	CHECK(cudaMalloc((void**)&d_module_image, filtered_image_size));
+	CHECK(cudaMalloc((void**)&d_non_max_image, filtered_image_size));
+	CHECK(cudaMalloc((void**)&d_orientations, orientations_size));
+	CHECK(cudaMemcpy(d_image, image, image_size, cudaMemcpyHostToDevice));
+	// - 1 - Gaussian Filter
+	kernel_convolution_smem << <grid, block, tile_size >> > (d_image, d_gaussian_image, width, height, channels, tile_side, kernel_side, kernel_radius, GAUSS_KERNEL_CODE);
+	grid = dim3((f_width_gaussian + block.x - 1) / block.x, (f_width_gaussian + block.y - 1) / block.y);
+	tile_side = BLOCK_SIDE + 2;
+	tile_size = tile_side * tile_side;
+	//	- 2 - Sobel Module and Gradient orientations
+	kernel_module_orientation_smem << <grid, block, tile_size >> > (d_gaussian_image, d_module_image, d_orientations, f_width_gaussian, f_height_gaussian, 1, tile_side);
+	// - 3 - Non max suppression 
+	kernel_non_max_suppression_smem << <grid, block, tile_size >> > (d_module_image, d_non_max_image, d_orientations, f_width, f_height, weak_color, strong_color, low_threshold, high_threshold, tile_side);
+	// - 4 - Hysteresis
+	kernel_hysteresis_smem << <grid, block, tile_size >> > (d_non_max_image, d_module_image, f_width, f_height, weak_color, strong_color, tile_side);
+	CHECK(cudaDeviceSynchronize());
+	CHECK(cudaMemcpy(filtered_image, d_module_image, filtered_image_size, cudaMemcpyDeviceToHost));
+	end_timer();
+	printf("Execution ended.\n\n");
+	//Saving result.
+	save_result(output, filtered_image, output_filename_canny_smem, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	CHECK(cudaFree(d_image));
+	CHECK(cudaFree(d_gaussian_image));
+	CHECK(cudaFree(d_module_image));
+	CHECK(cudaFree(d_non_max_image));
+	CHECK(cudaFree(d_orientations));
 	//Deallocation of host memory.
 	free(image);
 	free(filtered_image);
@@ -1433,57 +1383,53 @@ void stream_canny_gpu(const char * filename, float sigma, int kernel_side, int k
 	cudaStream_t stream[STREAMS];
 	for (int i = 0; i < STREAMS; i++)
 		CHECK(cudaStreamCreate(&stream[i]));
-	//The execution of the kernel is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	int offset_input = 0;
+	int offset_output = 0;
+	int row_offset;
+	printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
+	begin_timer();
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_gaussian_image, gaussian_image_size));
+	CHECK(cudaMalloc((void**)&d_module_image, filtered_image_size));
+	CHECK(cudaMalloc((void**)&d_non_max_image, filtered_image_size));
+	CHECK(cudaMalloc((void**)&d_orientations, orientations_size));
+	for (int j = 0; j < STREAMS; j++)
 	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		int offset_input = 0;
-		int offset_output = 0;
-		int row_offset;
-		printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
-		begin_timer();
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_gaussian_image, gaussian_image_size));
-		CHECK(cudaMalloc((void**)&d_module_image, filtered_image_size));
-		CHECK(cudaMalloc((void**)&d_non_max_image, filtered_image_size));
-		CHECK(cudaMalloc((void**)&d_orientations, orientations_size));
-		for (int j = 0; j < STREAMS; j++)
-		{
-			dim3 grid = dim3((f_width_gaussian + block.x - 1) / block.x, ((f_height_gaussian / STREAMS) + block.y - 1) / block.y);
-			row_offset = j * (height / STREAMS);
-			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			// - 1 - Gaussian Filter
-			kernel_convolution_stream << <grid, block, 0, stream[j] >> > (d_image, d_gaussian_image, width, height, channels, row_offset, kernel_side, kernel_radius, GAUSS_KERNEL_CODE);
-			grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
-			row_offset = j * (f_height_gaussian / STREAMS);
-			//	- 2 - Sobel Module and Gradient orientations
-			kernel_module_orientation_stream << <grid, block, 0, stream[j] >> > (d_gaussian_image, d_module_image, d_orientations, f_width_gaussian, f_height_gaussian, 1, row_offset);
-			row_offset = j * (f_height / STREAMS);
-			// - 3 - Non max suppression 
-			kernel_non_max_suppression_stream << <grid, block, 0, stream[j] >> > (d_module_image, d_non_max_image, d_orientations, f_width, f_height, row_offset, weak_color, strong_color, low_threshold, high_threshold);
-			// - 4 - Hysteresis
-			kernel_hysteresis_stream << <grid, block, 0, stream[j] >> > (d_non_max_image, d_module_image, f_width, f_height, row_offset, weak_color, strong_color);
-			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_module_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (int)chunk_size;
-			offset_output += (int)chunk_size_result;
-		}
-		//The computations end as soon as all streams end.
-		for (int j = 0; j < STREAMS; j++)
-			CHECK(cudaStreamSynchronize(stream[j]));
-		end_timer();
-		printf("Execution ended.\n\n");
-		//Saving the result as png image.
-		save_result(output, pinned_filtered_image, output_filename_canny_stream[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		cudaFree(d_image);
-		cudaFree(d_module_image);
-		cudaFree(d_filtered_image);
-		cudaFree(d_non_max_image);
-		cudaFree(d_gaussian_image);
-		cudaFree(d_orientations);
+		dim3 grid = dim3((f_width_gaussian + block.x - 1) / block.x, ((f_height_gaussian / STREAMS) + block.y - 1) / block.y);
+		row_offset = j * (height / STREAMS);
+		CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
+		// - 1 - Gaussian Filter
+		kernel_convolution_stream << <grid, block, 0, stream[j] >> > (d_image, d_gaussian_image, width, height, channels, row_offset, kernel_side, kernel_radius, GAUSS_KERNEL_CODE);
+		grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
+		row_offset = j * (f_height_gaussian / STREAMS);
+		//	- 2 - Sobel Module and Gradient orientations
+		kernel_module_orientation_stream << <grid, block, 0, stream[j] >> > (d_gaussian_image, d_module_image, d_orientations, f_width_gaussian, f_height_gaussian, 1, row_offset);
+		row_offset = j * (f_height / STREAMS);
+		// - 3 - Non max suppression 
+		kernel_non_max_suppression_stream << <grid, block, 0, stream[j] >> > (d_module_image, d_non_max_image, d_orientations, f_width, f_height, row_offset, weak_color, strong_color, low_threshold, high_threshold);
+		// - 4 - Hysteresis
+		kernel_hysteresis_stream << <grid, block, 0, stream[j] >> > (d_non_max_image, d_module_image, f_width, f_height, row_offset, weak_color, strong_color);
+		CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_module_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
+		offset_input += (int)chunk_size;
+		offset_output += (int)chunk_size_result;
 	}
+	//The computations end as soon as all streams end.
+	for (int j = 0; j < STREAMS; j++)
+		CHECK(cudaStreamSynchronize(stream[j]));
+	end_timer();
+	printf("Execution ended.\n\n");
+	//Saving the result as png image.
+	save_result(output, pinned_filtered_image, output_filename_canny_stream, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	cudaFree(d_image);
+	cudaFree(d_module_image);
+	cudaFree(d_filtered_image);
+	cudaFree(d_non_max_image);
+	cudaFree(d_gaussian_image);
+	cudaFree(d_orientations);
 	//Deallocation of streams.
 	for (int i = 0; i < STREAMS; i++)
 		cudaStreamDestroy(stream[i]);
@@ -1517,62 +1463,58 @@ void stream_smem_canny_gpu(const char * filename, float sigma, int kernel_side, 
 	cudaStream_t stream[STREAMS];
 	for (int i = 0; i < STREAMS; i++)
 		CHECK(cudaStreamCreate(&stream[i]));
-	//The execution of the kernel is done with different block dimensions: 16x16 and 32x32.
-	for (int i = 0; i < BLOCK_SIZES; i++)
+	dim3 block = dim3(BLOCK_SIDE, BLOCK_SIDE);
+	printf("Streams: %d\n", STREAMS);
+	int offset_input = 0;
+	int offset_output = 0;
+	int row_offset;
+	printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
+	begin_timer();
+	CHECK(cudaMalloc((void**)&d_image, image_size));
+	CHECK(cudaMalloc((void**)&d_gaussian_image, gaussian_image_size));
+	CHECK(cudaMalloc((void**)&d_module_image, filtered_image_size));
+	CHECK(cudaMalloc((void**)&d_non_max_image, filtered_image_size));
+	CHECK(cudaMalloc((void**)&d_orientations, orientations_size));
+	for (int j = 0; j < STREAMS; j++)
 	{
-		dim3 block = dim3(block_sizes[i], block_sizes[i]);
-		printf("Streams: %d\n", STREAMS);
-		int offset_input = 0;
-		int offset_output = 0;
-		int row_offset;
-		printf("Begin execution(block %dx%d, streams %d)...\n", block.x, block.y, STREAMS);
-		begin_timer();
-		CHECK(cudaMalloc((void**)&d_image, image_size));
-		CHECK(cudaMalloc((void**)&d_gaussian_image, gaussian_image_size));
-		CHECK(cudaMalloc((void**)&d_module_image, filtered_image_size));
-		CHECK(cudaMalloc((void**)&d_non_max_image, filtered_image_size));
-		CHECK(cudaMalloc((void**)&d_orientations, orientations_size));
-		for (int j = 0; j < STREAMS; j++)
-		{
-			dim3 grid = dim3((f_width_gaussian + block.x - 1) / block.x, ((f_height_gaussian / STREAMS) + block.y - 1) / block.y);
-			row_offset = j * (height / STREAMS);
-			tile_side = block_sizes[i] + kernel_radius * 2;
-			tile_size = tile_side * tile_side;
-			CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
-			// - 1 - Gaussian Filter
-			kernel_convolution_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_gaussian_image, width, height, channels, tile_side, row_offset, kernel_side, kernel_radius, GAUSS_KERNEL_CODE);
-			grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
-			row_offset = j * (f_height_gaussian / STREAMS);
-			tile_side = block_sizes[i] + 2;
-			tile_size = tile_side * tile_side;
-			//	- 2 - Sobel Module and Gradient orientations
-			kernel_module_orientation_stream_smem << <grid, block, tile_size, stream[j] >> > (d_gaussian_image, d_module_image, d_orientations, f_width_gaussian, f_height_gaussian, 1, tile_side, row_offset);
-			row_offset = j * (f_height / STREAMS);
-			// - 3 - Non max suppression 
-			kernel_non_max_suppression_stream_smem << < grid, block, tile_size, stream[j] >> > (d_module_image, d_non_max_image, d_orientations, f_width, f_height, row_offset, weak_color, strong_color, low_threshold, high_threshold, tile_side);
-			// - 4 - Hysteresis
-			kernel_hysteresis_stream_smem << <grid, block, tile_size, stream[j] >> > (d_non_max_image, d_module_image, f_width, f_height, row_offset, weak_color, strong_color, tile_side);
-			CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_module_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
-			offset_input += (int)chunk_size;
-			offset_output += (int)chunk_size_result;
-		}
-		//The computations end as soon as all streams end.
-		for (int j = 0; j < STREAMS; j++)
-			CHECK(cudaStreamSynchronize(stream[j]));
-		end_timer();
-		printf("Execution ended.\n\n");
-		//Saving the result as png image.
-		save_result(output, pinned_filtered_image, output_filename_canny_stream_smem[i], f_width, f_height);
-		printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
-		printf("Speedup: %f\n\n", speedup());
-		//Deallocation of device memory.
-		cudaFree(d_image);
-		cudaFree(d_module_image);
-		cudaFree(d_filtered_image);
-		cudaFree(d_non_max_image);
-		cudaFree(d_gaussian_image);
-		cudaFree(d_orientations);
+		dim3 grid = dim3((f_width_gaussian + block.x - 1) / block.x, ((f_height_gaussian / STREAMS) + block.y - 1) / block.y);
+		row_offset = j * (height / STREAMS);
+		tile_side = BLOCK_SIDE + kernel_radius * 2;
+		tile_size = tile_side * tile_side;
+		CHECK(cudaMemcpyAsync(&d_image[offset_input], &pinned_image[offset_input], chunk_size, cudaMemcpyHostToDevice, stream[j]));
+		// - 1 - Gaussian Filter
+		kernel_convolution_stream_smem << <grid, block, tile_size, stream[j] >> > (d_image, d_gaussian_image, width, height, channels, tile_side, row_offset, kernel_side, kernel_radius, GAUSS_KERNEL_CODE);
+		grid = dim3((f_width + block.x - 1) / block.x, ((f_height / STREAMS) + block.y - 1) / block.y);
+		row_offset = j * (f_height_gaussian / STREAMS);
+		tile_side = BLOCK_SIDE + 2;
+		tile_size = tile_side * tile_side;
+		//	- 2 - Sobel Module and Gradient orientations
+		kernel_module_orientation_stream_smem << <grid, block, tile_size, stream[j] >> > (d_gaussian_image, d_module_image, d_orientations, f_width_gaussian, f_height_gaussian, 1, tile_side, row_offset);
+		row_offset = j * (f_height / STREAMS);
+		// - 3 - Non max suppression 
+		kernel_non_max_suppression_stream_smem << < grid, block, tile_size, stream[j] >> > (d_module_image, d_non_max_image, d_orientations, f_width, f_height, row_offset, weak_color, strong_color, low_threshold, high_threshold, tile_side);
+		// - 4 - Hysteresis
+		kernel_hysteresis_stream_smem << <grid, block, tile_size, stream[j] >> > (d_non_max_image, d_module_image, f_width, f_height, row_offset, weak_color, strong_color, tile_side);
+		CHECK(cudaMemcpyAsync(&pinned_filtered_image[offset_output], &d_module_image[offset_output], chunk_size_result, cudaMemcpyDeviceToHost, stream[j]));
+		offset_input += (int)chunk_size;
+		offset_output += (int)chunk_size_result;
 	}
+	//The computations end as soon as all streams end.
+	for (int j = 0; j < STREAMS; j++)
+		CHECK(cudaStreamSynchronize(stream[j]));
+	end_timer();
+	printf("Execution ended.\n\n");
+	//Saving the result as png image.
+	save_result(output, pinned_filtered_image, output_filename_canny_stream_smem, f_width, f_height);
+	printf("Time elapsed for memory allocation, computation and memcpy H2D and D2H:%f seconds\n", time_elapsed());
+	printf("Speedup: %f\n\n", speedup());
+	//Deallocation of device memory.
+	cudaFree(d_image);
+	cudaFree(d_module_image);
+	cudaFree(d_filtered_image);
+	cudaFree(d_non_max_image);
+	cudaFree(d_gaussian_image);
+	cudaFree(d_orientations);
 	//Deallocation of cuda streams.
 	for (int i = 0; i < STREAMS; i++)
 		cudaStreamDestroy(stream[i]);

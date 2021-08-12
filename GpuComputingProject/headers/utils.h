@@ -12,6 +12,7 @@
     }                                                                          \
 }
 
+void print_device_props();
 bool check_input(const char* filename);
 void print_file_details(const char* filename);
 unsigned char* load_file_details(const char* filename, int* width, int* height, int* channels, size_t* image_size, size_t* filtered_image_size, int* f_width, int* f_height, int kernel_radius);
